@@ -31,6 +31,15 @@ enum class PropertyCategory(
 }
 
 object PropertyCategoryClassifier {
+    private val productIdentityFields = setOf(
+        "brand",
+        "device",
+        "manufacturer",
+        "model",
+        "name",
+        "marketname",
+    )
+
     private val spoofingExact = setOf(
         "ro.build.fingerprint",
         "ro.build.id",
@@ -44,13 +53,11 @@ object PropertyCategoryClassifier {
         "ro.build.version.incremental",
         "ro.build.version.security_patch",
         "ro.build.version.sdk",
-        "ro.product.brand",
-        "ro.product.device",
-        "ro.product.manufacturer",
-        "ro.product.model",
-        "ro.product.name",
-        "ro.product.marketname",
         "ro.product.first_api_level",
+        "ro.serialno",
+        "ro.boot.serialno",
+        "ro.boot.hardware.sku",
+        "ro.boot.product.hardware.sku",
     )
 
     private val spoofingSuffixes = setOf(
@@ -62,11 +69,7 @@ object PropertyCategoryClassifier {
         ".build.version.release",
         ".build.version.incremental",
         ".build.version.security_patch",
-        ".product.brand",
-        ".product.device",
-        ".product.manufacturer",
-        ".product.model",
-        ".product.name",
+        ".build.version.sdk",
     )
 
     fun matches(category: PropertyCategory, item: PropertyUiItem): Boolean = when (category) {
@@ -80,7 +83,11 @@ object PropertyCategoryClassifier {
 
     fun isSpoofingProperty(name: String): Boolean {
         val normalized = name.lowercase()
-        return normalized in spoofingExact || spoofingSuffixes.any(normalized::endsWith)
+        val productIdentity = normalized.startsWith("ro.product.") &&
+            normalized.substringAfterLast('.') in productIdentityFields
+        return normalized in spoofingExact ||
+            productIdentity ||
+            spoofingSuffixes.any(normalized::endsWith)
     }
 
     private fun isBuildIdentity(name: String): Boolean {
