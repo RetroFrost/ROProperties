@@ -7,13 +7,23 @@ Unlike property viewers that only recognise a small hard-coded list, ROPropertie
 ## Features
 
 - Discovers every `ro.*` property exposed by Android's property service.
-- Search and filter by documented/known/inferred confidence.
+- ChatGPT-inspired Android navigation: compact two-line menu, side drawer, neutral light/dark surfaces and a cleaner property feed.
+- Real property categories instead of a single flat list.
+- Dedicated **Spoofing properties** category for build/device identity values commonly read when software identifies the device.
+- Additional Build & identity, Hardware, OEM & vendor, and Runtime & debug categories.
+- Search plus documented/known/inferred/unknown confidence filtering from the drawer.
 - Property meaning, current-value meaning, known alternative values, origin/namespace, consumers, edit behaviour, reboot notes and risk level.
 - Runtime editing through root `resetprop` when supported.
 - Persistent editing through a Magisk-compatible `system.prop` module in `/data/adb/modules/roproperties`.
 - Runtime + persistent mode.
 - Explicit warnings for compatibility/security/boot-sensitive properties.
-- Dynamic Material 3 colour on Android 12+.
+- Neutral Material 3 light and dark themes.
+
+## Spoofing properties
+
+The Spoofing properties category groups identity-facing values such as build fingerprints, product model/manufacturer/brand/device/name, build IDs, build tags/types and version metadata across Android's system/vendor/product-style namespaces.
+
+The category is intentionally descriptive rather than promising that changing a property will bypass an integrity, compatibility or security check. Different apps and Android components can use additional signals beyond `ro.*` values.
 
 ## Important editing behaviour
 
