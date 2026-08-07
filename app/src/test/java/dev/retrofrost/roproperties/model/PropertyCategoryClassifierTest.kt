@@ -15,9 +15,18 @@ class PropertyCategoryClassifierTest {
     }
 
     @Test
+    fun recognisesPartitionQualifiedProductIdentity() {
+        assertTrue(PropertyCategoryClassifier.isSpoofingProperty("ro.product.system.model"))
+        assertTrue(PropertyCategoryClassifier.isSpoofingProperty("ro.product.vendor.brand"))
+        assertTrue(PropertyCategoryClassifier.isSpoofingProperty("ro.product.product.device"))
+        assertTrue(PropertyCategoryClassifier.isSpoofingProperty("ro.boot.hardware.sku"))
+    }
+
+    @Test
     fun excludesUnrelatedReadOnlyProperties() {
         assertFalse(PropertyCategoryClassifier.isSpoofingProperty("ro.hardware"))
         assertFalse(PropertyCategoryClassifier.isSpoofingProperty("ro.debuggable"))
         assertFalse(PropertyCategoryClassifier.isSpoofingProperty("ro.boot.verifiedbootstate"))
+        assertFalse(PropertyCategoryClassifier.isSpoofingProperty("ro.product.cpu.abilist"))
     }
 }
