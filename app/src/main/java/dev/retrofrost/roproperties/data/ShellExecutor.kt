@@ -3,14 +3,14 @@ package dev.retrofrost.roproperties.data
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-internal data class ShellResult(
+data class ShellResult(
     val exitCode: Int,
     val output: String,
 ) {
     val ok: Boolean get() = exitCode == 0
 }
 
-internal class ShellExecutor {
+class ShellExecutor {
     suspend fun shell(command: String): ShellResult = execute(listOf("sh", "-c", command))
 
     suspend fun root(command: String): ShellResult = execute(listOf("su", "-c", command))
