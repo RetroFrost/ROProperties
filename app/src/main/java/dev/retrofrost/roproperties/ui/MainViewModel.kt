@@ -6,6 +6,8 @@ import dev.retrofrost.roproperties.data.PropertyRepository
 import dev.retrofrost.roproperties.knowledge.PropertyKnowledgeEngine
 import dev.retrofrost.roproperties.model.EditMode
 import dev.retrofrost.roproperties.model.KnowledgeConfidence
+import dev.retrofrost.roproperties.model.PropertyCategory
+import dev.retrofrost.roproperties.model.PropertyCategoryClassifier
 import dev.retrofrost.roproperties.model.PropertyUiItem
 import dev.retrofrost.roproperties.model.RootCapabilities
 import kotlinx.coroutines.async
@@ -21,6 +23,7 @@ data class MainUiState(
     val applying: Boolean = false,
     val properties: List<PropertyUiItem> = emptyList(),
     val query: String = "",
+    val category: PropertyCategory = PropertyCategory.ALL,
     val confidenceFilter: KnowledgeConfidence? = null,
     val capabilities: RootCapabilities = RootCapabilities(),
     val message: String? = null,
@@ -33,8 +36,12 @@ data class MainUiState(
                 item.explanation.propertyMeaning.contains(query, ignoreCase = true) ||
                 item.explanation.valueMeaning.contains(query, ignoreCase = true)
             val confidenceMatches = confidenceFilter == null || item.explanation.confidence == confidenceFilter
-            queryMatches && confidenceMatches
+            val categoryMatches = PropertyCategoryClassifier.matches(category, item)
+            queryMatches && confidenceMatches && categoryMatches
         }
+
+    fun countFor(category: PropertyCategory): Int =
+        properties.count { PropertyCategoryClassifier.matches(category, it) }
 }
 
 class MainViewModel(
@@ -68,6 +75,9 @@ class MainViewModel(
     }
 
     fun setQuery(query: String) = _state.update { it.copy(query = query) }
+
+    fun setCategory(category: PropertyCategory) =
+        _state.update { it.copy(category = category, query = "") }
 
     fun setConfidenceFilter(filter: KnowledgeConfidence?) =
         _state.update { it.copy(confidenceFilter = filter) }
