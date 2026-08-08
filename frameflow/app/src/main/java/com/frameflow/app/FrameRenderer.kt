@@ -4,9 +4,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.util.Base64
 import kotlin.math.max
@@ -59,14 +56,12 @@ object FrameRenderer {
             canvas.scale(sx, sy)
             canvas.translate(-cx, -cy)
 
-            // saveLayer groups the raster + all strokes so opacity applies once and CLEAR
-            // eraser strokes only erase this layer, without allocating a canvas-sized Bitmap.
             val groupPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 alpha = (layer.opacity.safe(1f).coerceIn(0f, 1f) * 255f).roundToInt()
             }
             val group = canvas.saveLayer(RectF(0f, 0f, sourceWidth.toFloat(), sourceHeight.toFloat()), groupPaint)
             drawRaster(canvas, layer, sourceWidth, sourceHeight)
-            layer.strokes.forEach { drawStroke(canvas, it) }
+            layer.strokes.forEach { BrushEngine.draw(canvas, it) }
             canvas.restoreToCount(group)
             canvas.restore()
         }
@@ -95,30 +90,6 @@ object FrameRenderer {
         } finally {
             if (!source.isRecycled) source.recycle()
         }
-    }
-
-    private fun drawStroke(canvas: Canvas, stroke: StrokeData) {
-        val points = stroke.points.filter { it.x.isFinite() && it.y.isFinite() }
-        if (points.isEmpty()) return
-        val safeWidth = stroke.width.safe(1f).coerceIn(.1f, 4096f)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-            strokeWidth = safeWidth
-            color = stroke.colorArgb
-            alpha = (stroke.alpha.safe(1f).coerceIn(0f, 1f) * 255f).roundToInt()
-            if (stroke.erase) xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
-        }
-        if (points.size == 1) {
-            canvas.drawCircle(points[0].x, points[0].y, safeWidth / 2f, paint.apply { style = Paint.Style.FILL })
-            return
-        }
-        val path = Path().apply {
-            moveTo(points.first().x, points.first().y)
-            points.drop(1).forEach { lineTo(it.x, it.y) }
-        }
-        canvas.drawPath(path, paint)
     }
 
     private fun Float.safe(fallback: Float): Float = if (isFinite()) this else fallback
