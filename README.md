@@ -1,5 +1,7 @@
 # ROProperties
 
+**Current app version: 0.3.0**
+
 ROProperties is a native Android Material 3 app for inspecting and editing Android `ro.*` system properties on rooted devices.
 
 Unlike property viewers that only recognise a small hard-coded list, ROProperties has a knowledge engine that separately explains **what each property means** and **what its current value means**. Known AOSP properties get curated definitions; OEM/vendor and undocumented properties get clearly labelled inference instead of a fake definitive answer.
