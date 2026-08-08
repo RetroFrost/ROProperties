@@ -153,7 +153,7 @@ fun FrameflowApp() {
                 onImportProject = { importProjectLauncher.launch(arrayOf("application/octet-stream", "application/json", "text/plain", "*/*")) }
             )
         } else {
-            FullEditorScreen(
+            FinalEditorScreen(
                 project = project,
                 repository = repository,
                 onBack = {
