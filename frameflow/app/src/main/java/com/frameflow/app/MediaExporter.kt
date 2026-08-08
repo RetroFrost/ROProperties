@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
@@ -11,6 +12,8 @@ import com.squareup.gifencoder.FloydSteinbergDitherer
 import com.squareup.gifencoder.GifEncoder
 import com.squareup.gifencoder.ImageOptions
 import com.squareup.gifencoder.KMeansQuantizer
+import java.io.File
+import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -41,6 +44,31 @@ object MediaExporter {
         fps: Int = 30,
         bitrate: Int = 6_000_000
     ) {
+        val temporaryVideo = File.createTempFile("frameflow-video-", ".mp4", context.cacheDir)
+        try {
+            encodeVideo(project, temporaryVideo, fps, bitrate)
+            val audio = project.audioFileName?.let { name ->
+                File(File(File(context.filesDir, "frameflow-media"), project.id), name)
+                    .takeIf { it.isFile }
+            }
+            if (audio == null) {
+                context.contentResolver.openOutputStream(uri, "w")?.use { output ->
+                    temporaryVideo.inputStream().use { it.copyTo(output) }
+                } ?: error("Unable to create MP4")
+            } else {
+                muxVideoAndAudio(context, project, temporaryVideo, audio, uri)
+            }
+        } finally {
+            temporaryVideo.delete()
+        }
+    }
+
+    private fun encodeVideo(
+        project: ProjectState,
+        destination: File,
+        fps: Int,
+        bitrate: Int
+    ) {
         val width = project.canvasWidth and 0xFFFFFFFE.toInt()
         val height = project.canvasHeight and 0xFFFFFFFE.toInt()
         require(width >= 64 && height >= 64) { "Canvas is too small for MP4" }
@@ -57,9 +85,7 @@ object MediaExporter {
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         codec.start()
 
-        val pfd = context.contentResolver.openFileDescriptor(uri, "rw")
-            ?: error("Unable to create MP4")
-        val muxer = MediaMuxer(pfd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val muxer = MediaMuxer(destination.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         var muxerStarted = false
         var trackIndex = -1
         val info = MediaCodec.BufferInfo()
@@ -134,7 +160,103 @@ object MediaExporter {
             codec.release()
             if (muxerStarted) runCatching { muxer.stop() }
             muxer.release()
+        }
+    }
+
+    private fun muxVideoAndAudio(
+        context: Context,
+        project: ProjectState,
+        videoFile: File,
+        audioFile: File,
+        destination: Uri
+    ) {
+        val videoExtractor = MediaExtractor()
+        val audioExtractor = MediaExtractor()
+        videoExtractor.setDataSource(videoFile.absolutePath)
+        audioExtractor.setDataSource(audioFile.absolutePath)
+
+        val videoSourceTrack = findTrack(videoExtractor, "video/")
+            ?: error("Encoded video contains no video track")
+        val audioSourceTrack = findTrack(audioExtractor, "audio/")
+            ?: error("Imported file contains no audio track")
+        videoExtractor.selectTrack(videoSourceTrack)
+        audioExtractor.selectTrack(audioSourceTrack)
+
+        val pfd = context.contentResolver.openFileDescriptor(destination, "rw")
+            ?: error("Unable to create MP4")
+        val muxer = MediaMuxer(pfd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxerStarted = false
+        try {
+            val videoOutTrack = muxer.addTrack(videoExtractor.getTrackFormat(videoSourceTrack))
+            val audioOutTrack = muxer.addTrack(audioExtractor.getTrackFormat(audioSourceTrack))
+            muxer.start()
+            muxerStarted = true
+
+            val buffer = ByteBuffer.allocateDirect(8 * 1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+
+            copyTrack(
+                extractor = videoExtractor,
+                muxer = muxer,
+                outputTrack = videoOutTrack,
+                buffer = buffer,
+                info = info,
+                offsetUs = 0L,
+                endUs = project.totalDurationMs.toLong() * 1000L
+            )
+
+            val offsetUs = project.audioOffsetMs.toLong() * 1000L
+            if (offsetUs < 0L) {
+                audioExtractor.seekTo(-offsetUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            } else {
+                audioExtractor.seekTo(0L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            }
+            copyTrack(
+                extractor = audioExtractor,
+                muxer = muxer,
+                outputTrack = audioOutTrack,
+                buffer = buffer,
+                info = info,
+                offsetUs = offsetUs,
+                endUs = project.totalDurationMs.toLong() * 1000L
+            )
+        } finally {
+            videoExtractor.release()
+            audioExtractor.release()
+            if (muxerStarted) runCatching { muxer.stop() }
+            muxer.release()
             pfd.close()
+        }
+    }
+
+    private fun findTrack(extractor: MediaExtractor, prefix: String): Int? {
+        for (index in 0 until extractor.trackCount) {
+            val mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME).orEmpty()
+            if (mime.startsWith(prefix)) return index
+        }
+        return null
+    }
+
+    private fun copyTrack(
+        extractor: MediaExtractor,
+        muxer: MediaMuxer,
+        outputTrack: Int,
+        buffer: ByteBuffer,
+        info: MediaCodec.BufferInfo,
+        offsetUs: Long,
+        endUs: Long
+    ) {
+        while (true) {
+            buffer.clear()
+            val size = extractor.readSampleData(buffer, 0)
+            if (size < 0) break
+            val outputPts = extractor.sampleTime + offsetUs
+            if (outputPts >= endUs) break
+            if (outputPts >= 0L) {
+                info.set(0, size, outputPts, extractor.sampleFlags)
+                muxer.writeSampleData(outputTrack, buffer, info)
+            }
+            if (!extractor.advance()) break
         }
     }
 
