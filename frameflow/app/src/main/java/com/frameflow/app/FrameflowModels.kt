@@ -11,8 +11,6 @@ import androidx.compose.ui.graphics.Color
 import java.util.UUID
 import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.sin
 
 const val FRAMEFLOW_FORMAT_VERSION = 3
@@ -153,6 +151,7 @@ class ProjectState(
     var backgroundArgb by mutableIntStateOf(backgroundArgb)
     var modifiedAt by mutableLongStateOf(modified)
     var revision by mutableIntStateOf(0)
+    var activeFrameIndex by mutableIntStateOf(0)
     var mode by mutableStateOf(mode)
     var fps by mutableIntStateOf(fps.coerceIn(1, 60))
     var loopPlayback by mutableStateOf(loopPlayback)
@@ -183,6 +182,7 @@ class ProjectState(
         audioVolume = other.audioVolume
         frames.clear()
         frames.addAll(other.frames.map { it.cloneFrame() })
+        activeFrameIndex = activeFrameIndex.coerceIn(frames.indices)
         if (markDirty) touch()
     }
 }
@@ -231,7 +231,13 @@ val erasers = List(60) {
 }
 
 class EditorState(val project: ProjectState) {
-    var frameIndex by mutableIntStateOf(0)
+    private var frameIndexState by mutableIntStateOf(project.activeFrameIndex.coerceIn(project.frames.indices))
+    var frameIndex: Int
+        get() = frameIndexState
+        set(value) {
+            frameIndexState = value
+            project.activeFrameIndex = value.coerceIn(project.frames.indices)
+        }
     var layerIndex by mutableIntStateOf(0)
     var tool by mutableStateOf(Tool.Brush)
     var brush by mutableStateOf(brushes[8])
@@ -448,7 +454,6 @@ class EditorState(val project: ProjectState) {
                 it.offsetX += 24f
                 it.offsetY += 24f
             })
-            selectedRasterLayerIndex = selectedRasterLayerIndex
             project.touch()
             return
         }
