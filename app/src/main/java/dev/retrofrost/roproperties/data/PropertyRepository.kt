@@ -15,9 +15,7 @@ class PropertyRepository(
     suspend fun loadProperties(): List<AndroidProperty> {
         val result = shell.shell("getprop")
         if (!result.ok) return emptyList()
-
-        return result.output
-            .lineSequence()
+        return result.output.lineSequence()
             .mapNotNull(::parsePropertyLine)
             .filter { it.name.startsWith("ro.") }
             .sortedBy { it.name }
@@ -102,11 +100,7 @@ class PropertyRepository(
 
         val policy = PropertyPolicyClassifier.policyFor(name)
         if (!policy.canOverride) {
-            return EditResult(
-                success = false,
-                message = "${policy.editability.label}: ${policy.warning}",
-                rebootRecommended = false,
-            )
+            return EditResult(false, "${policy.editability.label}: ${policy.warning}")
         }
         if (!caps.rootAvailable) return EditResult(false, "Root access was not granted.")
 
@@ -139,12 +133,22 @@ class PropertyRepository(
         val requiredRuntime = mode == EditMode.RUNTIME || mode == EditMode.BOTH
         val requiredPersistent = mode == EditMode.PERSISTENT || mode == EditMode.BOTH
         val success = (!requiredRuntime || runtimeApplied) && (!requiredPersistent || persistentApplied)
-        val rebootRecommended = persistentApplied || policy.cachedSensitive
+        // A reboot only helps if the override is saved for the next boot. Rebooting a live-only
+        // resetprop override would simply discard it.
+        val rebootRecommended = persistentApplied
 
         if (verification?.propertyServiceMatches == true && verification.frameworkMapped && !verification.frameworkMatches) {
-            messages += "Property service changed, but ROProperties' already-running Android framework cache still reports '${verification.frameworkValue}'. Reboot (or at minimum a fresh consumer process) is required for a reliable identity change."
+            if (persistentApplied) {
+                messages += "Property service changed, but ROProperties' already-running Android framework cache still reports '${verification.frameworkValue}'. The persistent override is saved; reboot to let fresh framework/app processes read it from boot."
+            } else {
+                messages += "Property service changed, but ROProperties' already-running Android framework cache still reports '${verification.frameworkValue}'. This is a live-only override: a fresh consumer process may re-read it, but rebooting would discard it. Save it persistently before rebooting if you want a boot-wide identity change."
+            }
         } else if (runtimeApplied && policy.cachedSensitive) {
-            messages += "The property-service write succeeded, but this property is cache/boot-sensitive; that does not prove the subsystem changed behaviour."
+            messages += if (persistentApplied) {
+                "The live property-service write succeeded, but this property is cache/boot-sensitive. The persistent copy is saved; reboot is recommended for a reliable effect."
+            } else {
+                "The live property-service write succeeded, but this property is cache/boot-sensitive. getprop success alone does not prove the consumer changed, and this override will disappear on reboot."
+            }
         }
 
         return EditResult(
@@ -159,16 +163,10 @@ class PropertyRepository(
 
     private suspend fun applyRuntime(name: String, value: String): EditResult {
         val result = shell.root("resetprop ${shellQuote(name)} ${shellQuote(value)}")
-        if (!result.ok) {
-            return EditResult(false, "resetprop failed: ${result.output.ifBlank { "unknown error" }}")
-        }
+        if (!result.ok) return EditResult(false, "resetprop failed: ${result.output.ifBlank { "unknown error" }}")
 
         val serviceValue = shell.shell("getprop ${shellQuote(name)}").output.trim()
-        val verification = PropertyVerification(
-            requestedValue = value,
-            propertyServiceValue = serviceValue,
-            frameworkValue = frameworkCachedValue(name),
-        )
+        val verification = PropertyVerification(value, serviceValue, frameworkCachedValue(name))
         return if (verification.propertyServiceMatches) {
             EditResult(
                 success = true,
