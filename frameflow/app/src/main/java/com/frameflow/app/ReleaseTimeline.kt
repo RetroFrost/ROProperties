@@ -3,6 +3,8 @@ package com.frameflow.app
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
@@ -20,6 +22,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 @Composable
@@ -29,12 +32,35 @@ fun ReleaseTimeline(editor: EditorState, history: ProjectHistory, onExactDuratio
     val scope = rememberCoroutineScope()
     var pixelsPerSecond by rememberSaveable(project.id) { mutableFloatStateOf(34f) }
 
-    Column(Modifier.fillMaxWidth().padding(top = 3.dp)) {
+    Column(
+        Modifier.fillMaxWidth().padding(top = 3.dp).pointerInput(project.id) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false)
+                var previousDistance = 0f
+                do {
+                    val event = awaitPointerEvent()
+                    val pressed = event.changes.filter { it.pressed }
+                    if (pressed.size >= 2) {
+                        val a = pressed[0].position
+                        val b = pressed[1].position
+                        val distance = hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
+                        if (previousDistance > 1f && distance > 1f) {
+                            val factor = (distance / previousDistance).coerceIn(.75f, 1.35f)
+                            pixelsPerSecond = (pixelsPerSecond * factor).coerceIn(12f, 160f)
+                        }
+                        previousDistance = distance
+                        pressed.forEach { it.consume() }
+                    } else previousDistance = 0f
+                } while (event.changes.any { it.pressed })
+            }
+        }
+    ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Timeline", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+            Text("Pinch to zoom", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton(onClick = { pixelsPerSecond = (pixelsPerSecond / 1.25f).coerceAtLeast(12f) }) { Text("− Zoom") }
             TextButton(onClick = { pixelsPerSecond = (pixelsPerSecond * 1.25f).coerceAtMost(160f) }) { Text("+ Zoom") }
         }
