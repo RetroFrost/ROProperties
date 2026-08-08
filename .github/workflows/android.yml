@@ -44,3 +44,36 @@ jobs:
           name: Frameflow-debug
           path: frameflow/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Launch smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            adb logcat -c
+            adb install -r frameflow/app/build/outputs/apk/debug/app-debug.apk
+            adb shell am force-stop com.frameflow.app
+            adb shell am start -W -n com.frameflow.app/.MainActivity
+            sleep 4
+            if ! adb shell pidof com.frameflow.app >/dev/null; then
+              echo 'Frameflow process died during launch.'
+              adb logcat -d -v brief | tail -n 500
+              exit 1
+            fi
+            adb shell dumpsys activity activities | grep -q 'com.frameflow.app/.MainActivity' || {
+              echo 'Frameflow activity is not resumed after launch.'
+              adb logcat -d -v brief | tail -n 500
+              exit 1
+            }
+            echo 'Frameflow launch smoke test passed.'
