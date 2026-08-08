@@ -19,10 +19,22 @@ enum class RiskLevel(val label: String) {
     CRITICAL("Critical"),
 }
 
-enum class EditMode(val label: String) {
-    RUNTIME("Runtime"),
-    PERSISTENT("Persistent"),
-    BOTH("Runtime + persistent"),
+enum class EditMode(
+    val label: String,
+    val description: String,
+) {
+    RUNTIME(
+        label = "Runtime",
+        description = "Applies the value now with resetprop. It normally lasts only until the next reboot, and apps or services that already cached the old value may not notice the change.",
+    ),
+    PERSISTENT(
+        label = "Persistent",
+        description = "Saves the value in ROProperties' root module so it is applied again on future boots. The currently running value may stay unchanged until you reboot.",
+    ),
+    BOTH(
+        label = "Runtime + persistent",
+        description = "Applies the value immediately and also saves it for future boots. Use this when you want the change now and after reboot.",
+    ),
 }
 
 data class PropertyExplanation(
