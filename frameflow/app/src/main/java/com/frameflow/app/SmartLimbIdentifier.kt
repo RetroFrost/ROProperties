@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.util.Base64
+import com.google.mlkit.common.MlKit
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.Pose
 import com.google.mlkit.vision.pose.PoseDetection
@@ -28,6 +29,17 @@ object SmartLimbIdentifier {
             onFailure(IllegalArgumentException("Selected layer has no raster artwork"))
             return
         }
+
+        // ML Kit's default ContentProvider is deliberately disabled in the manifest so
+        // an optional native AI dependency can never prevent Frameflow from launching.
+        // Initialise it only when the user actually invokes limb identification.
+        runCatching { MlKit.initialize(FrameflowApplication.appContext) }
+            .onFailure {
+                source.recycle()
+                onFailure(it)
+                return
+            }
+
         val options = PoseDetectorOptions.Builder()
             .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
             .build()
