@@ -134,15 +134,10 @@ class MainViewModel(
 
         viewModelScope.launch {
             _state.update { it.copy(applying = true, message = null) }
-            var successful = 0
-            var failed = 0
-            var changedAtRuntime = false
-
-            values.forEach { value ->
-                val result = repository.apply(value.name, value.value, mode)
-                if (result.success) successful++ else failed++
-                changedAtRuntime = changedAtRuntime || result.runtimeApplied
-            }
+            val results = repository.applyBatch(values, mode)
+            val successful = results.count { it.success }
+            val failed = results.size - successful
+            val changedAtRuntime = results.any { it.runtimeApplied }
 
             val summary = when {
                 failed == 0 -> "Imported $successful properties using ${mode.label}."
