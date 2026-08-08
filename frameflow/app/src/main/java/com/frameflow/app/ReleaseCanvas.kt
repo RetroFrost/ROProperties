@@ -68,12 +68,8 @@ fun ReleaseCanvas(
         if (tool != ReleaseTool.ColourRepeat) colourRepeatPoint = null
     }
 
-    val preview = remember(project.revision, editor.frameIndex) {
-        FrameRenderer.renderPreview(project, editor.frameIndex)
-    }
-    DisposableEffect(preview) {
-        onDispose { if (!preview.isRecycled) preview.recycle() }
-    }
+    val preview = remember(project.revision, editor.frameIndex) { FrameRenderer.renderPreview(project, editor.frameIndex) }
+    DisposableEffect(preview) { onDispose { if (!preview.isRecycled) preview.recycle() } }
 
     val onionFrames = remember(project.revision, editor.frameIndex, onionBefore, onionAfter, onionSelectedLayerOnly, editor.layerIndex) {
         val result = mutableListOf<Pair<Bitmap, Boolean>>()
@@ -89,15 +85,11 @@ fun ReleaseCanvas(
         }
         result
     }
-    DisposableEffect(onionFrames) {
-        onDispose { onionFrames.forEach { (bitmap, _) -> if (!bitmap.isRecycled) bitmap.recycle() } }
-    }
+    DisposableEffect(onionFrames) { onDispose { onionFrames.forEach { (bitmap, _) -> if (!bitmap.isRecycled) bitmap.recycle() } } }
 
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
         val aspect = project.canvasWidth.toFloat() / project.canvasHeight.coerceAtLeast(1)
-        val fit = if (maxWidth.value / maxHeight.value > aspect) {
-            Modifier.fillMaxHeight().aspectRatio(aspect)
-        } else Modifier.fillMaxWidth().aspectRatio(aspect)
+        val fit = if (maxWidth.value / maxHeight.value > aspect) Modifier.fillMaxHeight().aspectRatio(aspect) else Modifier.fillMaxWidth().aspectRatio(aspect)
 
         Box(
             fit
@@ -127,6 +119,14 @@ fun ReleaseCanvas(
                                     pressureTotal = pressureFor(event)
                                     pressureCount = 1
                                 }
+                                ReleaseTool.MaskAdd, ReleaseTool.MaskRemove -> {
+                                    if (!SemanticMaskTools.canRefine(editor)) {
+                                        onMessage("Select a detected raster limb/part with a preserved rig source first")
+                                    } else {
+                                        history.checkpoint()
+                                        livePoints = listOf(toLayerPoint(editor, visible))
+                                    }
+                                }
                                 ReleaseTool.SelectPart -> SelectionTools.selectPartAt(editor, visible)
                                 ReleaseTool.ColourRepeat -> {
                                     colourRepeatPoint = visible
@@ -136,10 +136,7 @@ fun ReleaseCanvas(
                                     history.checkpoint()
                                     runCatching {
                                         val changed = RasterEditingTools.floodFillVisible(project, editor.frameIndex, visible, editor.color.toArgb())
-                                        if (changed > 0) {
-                                            editor.layerIndex = 0
-                                            editor.clearSelection()
-                                        }
+                                        if (changed > 0) { editor.layerIndex = 0; editor.clearSelection() }
                                         changed
                                     }.onFailure { onMessage("Fill failed: ${it.message ?: "not enough memory"}") }
                                 }
@@ -149,9 +146,7 @@ fun ReleaseCanvas(
                                             if (argb != null) {
                                                 val hsv = FloatArray(3)
                                                 AndroidColor.colorToHSV(argb, hsv)
-                                                editor.hue = hsv[0]
-                                                editor.saturation = hsv[1]
-                                                editor.value = hsv[2]
+                                                editor.hue = hsv[0]; editor.saturation = hsv[1]; editor.value = hsv[2]
                                                 editor.alpha = AndroidColor.alpha(argb) / 255f
                                                 onToolChange(ReleaseTool.Brush)
                                             }
@@ -161,8 +156,7 @@ fun ReleaseCanvas(
                                 ReleaseTool.Line, ReleaseTool.Rectangle, ReleaseTool.Ellipse -> if (!editor.layer.locked) {
                                     history.checkpoint()
                                     val local = toLayerPoint(editor, visible)
-                                    shapeStart = local
-                                    shapeEnd = local
+                                    shapeStart = local; shapeEnd = local
                                 }
                                 ReleaseTool.Pan -> Unit
                             }
@@ -176,20 +170,23 @@ fun ReleaseCanvas(
                                     for (historyIndex in 0 until event.historySize) {
                                         val historical = eventPoint(event.getHistoricalX(0, historyIndex), event.getHistoricalY(0, historyIndex), canvasSize, project)
                                         appended += toLayerPoint(editor, historical)
-                                        pressureTotal += pressureFor(event, historyIndex)
-                                        pressureCount++
+                                        pressureTotal += pressureFor(event, historyIndex); pressureCount++
                                     }
                                     appended += toLayerPoint(editor, visible)
-                                    pressureTotal += pressureFor(event)
-                                    pressureCount++
+                                    pressureTotal += pressureFor(event); pressureCount++
+                                    livePoints = livePoints + appended
+                                }
+                                ReleaseTool.MaskAdd, ReleaseTool.MaskRemove -> if (livePoints.isNotEmpty()) {
+                                    val appended = ArrayList<CanvasPoint>(event.historySize + 1)
+                                    for (historyIndex in 0 until event.historySize) {
+                                        appended += toLayerPoint(editor, eventPoint(event.getHistoricalX(0, historyIndex), event.getHistoricalY(0, historyIndex), canvasSize, project))
+                                    }
+                                    appended += toLayerPoint(editor, visible)
                                     livePoints = livePoints + appended
                                 }
                                 ReleaseTool.SelectPart, ReleaseTool.ColourRepeat -> {
                                     if (editor.selectedIds.isNotEmpty() || editor.selectedRasterLayerIndex >= 0) {
-                                        if (!draggingSelection) {
-                                            history.checkpoint()
-                                            draggingSelection = true
-                                        }
+                                        if (!draggingSelection) { history.checkpoint(); draggingSelection = true }
                                         editor.moveSelection(visible.x - previousVisible.x, visible.y - previousVisible.y)
                                     }
                                 }
@@ -213,15 +210,23 @@ fun ReleaseCanvas(
                                     } else 1f
                                     editor.layer.strokes.add(BrushEngine.createStroke(preset, livePoints, editor.color.toArgb(), activeErase, pressure))
                                     val argb = editor.color.toArgb()
-                                    recentColours.remove(argb)
-                                    recentColours.add(0, argb)
+                                    recentColours.remove(argb); recentColours.add(0, argb)
                                     while (recentColours.size > 16) recentColours.removeAt(recentColours.lastIndex)
                                     project.touch()
                                 }
+                                ReleaseTool.MaskAdd, ReleaseTool.MaskRemove -> if (livePoints.isNotEmpty()) {
+                                    runCatching {
+                                        SemanticMaskTools.refine(
+                                            editor,
+                                            livePoints,
+                                            editor.brush.width.coerceIn(2f, 300f),
+                                            if (tool == ReleaseTool.MaskAdd) SemanticMaskTools.Mode.Add else SemanticMaskTools.Mode.Remove
+                                        )
+                                    }.onFailure { onMessage("Mask refinement failed: ${it.message ?: "image error"}") }
+                                }
                                 ReleaseTool.Lasso -> selectCurrentLayerPolygon(editor, livePoints)
                                 ReleaseTool.Line, ReleaseTool.Rectangle, ReleaseTool.Ellipse -> {
-                                    val start = shapeStart
-                                    val end = shapeEnd
+                                    val start = shapeStart; val end = shapeEnd
                                     if (start != null && end != null && !editor.layer.locked) {
                                         val points = when (tool) {
                                             ReleaseTool.Line -> listOf(start, end)
@@ -237,19 +242,11 @@ fun ReleaseCanvas(
                                 }
                                 else -> if (draggingSelection) project.touch()
                             }
-                            livePoints = emptyList()
-                            shapeStart = null
-                            shapeEnd = null
-                            lastVisiblePoint = null
-                            draggingSelection = false
+                            livePoints = emptyList(); shapeStart = null; shapeEnd = null; lastVisiblePoint = null; draggingSelection = false
                             true
                         }
                         MotionEvent.ACTION_CANCEL -> {
-                            livePoints = emptyList()
-                            shapeStart = null
-                            shapeEnd = null
-                            lastVisiblePoint = null
-                            draggingSelection = false
+                            livePoints = emptyList(); shapeStart = null; shapeEnd = null; lastVisiblePoint = null; draggingSelection = false
                             true
                         }
                         else -> true
@@ -258,26 +255,29 @@ fun ReleaseCanvas(
         ) {
             ReleaseCheckerboard()
             onionFrames.forEach { (bitmap, next) ->
-                Image(
-                    bitmap.asImageBitmap(), null, Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillBounds,
-                    alpha = onionAlpha.coerceIn(0f, .8f) * if (next) .82f else 1f
-                )
+                Image(bitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds, alpha = onionAlpha.coerceIn(0f, .8f) * if (next) .82f else 1f)
             }
             Image(preview.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
             Canvas(Modifier.fillMaxSize()) {
                 val sx = size.width / project.canvasWidth.coerceAtLeast(1)
                 val sy = size.height / project.canvasHeight.coerceAtLeast(1)
-                if (livePoints.size >= 2 && tool in listOf(ReleaseTool.Brush, ReleaseTool.Eraser, ReleaseTool.Lasso)) {
+                val liveTools = listOf(ReleaseTool.Brush, ReleaseTool.Eraser, ReleaseTool.Lasso, ReleaseTool.MaskAdd, ReleaseTool.MaskRemove)
+                if (livePoints.size >= 2 && tool in liveTools) {
                     val displayPoints = if (tool == ReleaseTool.Lasso) livePoints else livePoints.map { localToVisible(editor, it) }
                     val path = Path().apply {
                         moveTo(displayPoints.first().x * sx, displayPoints.first().y * sy)
                         displayPoints.drop(1).forEach { lineTo(it.x * sx, it.y * sy) }
                     }
                     val preset = if (activeErase) editor.eraser else editor.brush
+                    val previewColour = when (tool) {
+                        ReleaseTool.Lasso -> lassoColour
+                        ReleaseTool.MaskAdd -> Color(0xAA00C853)
+                        ReleaseTool.MaskRemove -> Color(0xAAD50000)
+                        else -> if (activeErase) Color(0x889E9E9E) else editor.color
+                    }
                     drawPath(
                         path,
-                        if (tool == ReleaseTool.Lasso) lassoColour else if (activeErase) Color(0x889E9E9E) else editor.color,
+                        previewColour,
                         style = Stroke(
                             width = if (tool == ReleaseTool.Lasso) 2.dp.toPx() else (preset.width * minOf(sx, sy)).coerceAtLeast(1f),
                             cap = StrokeCap.Round,
@@ -285,11 +285,9 @@ fun ReleaseCanvas(
                         )
                     )
                 }
-                val start = shapeStart
-                val end = shapeEnd
+                val start = shapeStart; val end = shapeEnd
                 if (start != null && end != null && tool in listOf(ReleaseTool.Line, ReleaseTool.Rectangle, ReleaseTool.Ellipse)) {
-                    val a = localToVisible(editor, start)
-                    val b = localToVisible(editor, end)
+                    val a = localToVisible(editor, start); val b = localToVisible(editor, end)
                     val x1 = a.x * sx; val y1 = a.y * sy; val x2 = b.x * sx; val y2 = b.y * sy
                     val stroke = Stroke((editor.brush.width * minOf(sx, sy)).coerceAtLeast(1f))
                     when (tool) {
@@ -302,18 +300,12 @@ fun ReleaseCanvas(
             }
 
             if (editor.selectedIds.isNotEmpty() || editor.selectedRasterLayerIndex >= 0) {
-                Surface(
-                    Modifier.align(Alignment.TopCenter).padding(8.dp),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer
-                ) {
+                Surface(Modifier.align(Alignment.TopCenter).padding(8.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
                     LazyRow(Modifier.padding(horizontal = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         item {
                             Text(
-                                if (editor.selectedRasterLayerIndex in editor.frame.layers.indices) editor.frame.layers[editor.selectedRasterLayerIndex].part.label
-                                else "${editor.selectedIds.size} selected",
-                                Modifier.padding(start = 6.dp),
-                                style = MaterialTheme.typography.labelMedium
+                                if (editor.selectedRasterLayerIndex in editor.frame.layers.indices) editor.frame.layers[editor.selectedRasterLayerIndex].part.label else "${editor.selectedIds.size} selected",
+                                Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelMedium
                             )
                         }
                         item { TextButton(onClick = { history.checkpoint(); editor.duplicateSelection() }) { Text("Duplicate") } }
@@ -326,12 +318,7 @@ fun ReleaseCanvas(
                             item {
                                 TextButton(onClick = {
                                     history.checkpoint()
-                                    SelectionTools.replaceRepeatedRasterColor(
-                                        project,
-                                        editor.frame.layers[editor.selectedRasterLayerIndex],
-                                        colourRepeatPoint!!,
-                                        editor.color.toArgb()
-                                    )
+                                    SelectionTools.replaceRepeatedRasterColor(project, editor.frame.layers[editor.selectedRasterLayerIndex], colourRepeatPoint!!, editor.color.toArgb())
                                 }) { Text("Recolour") }
                             }
                         }
@@ -347,18 +334,14 @@ fun ReleaseCanvas(
 private fun ReleaseCheckerboard() {
     Canvas(Modifier.fillMaxSize()) {
         val cell = 22f
-        var y = 0f
-        var row = 0
+        var y = 0f; var row = 0
         while (y < size.height) {
-            var x = 0f
-            var col = 0
+            var x = 0f; var col = 0
             while (x < size.width) {
                 drawRect(if ((row + col) % 2 == 0) Color(0xFFE8E8E8) else Color(0xFFD2D2D2), Offset(x, y), androidx.compose.ui.geometry.Size(cell, cell))
-                x += cell
-                col++
+                x += cell; col++
             }
-            y += cell
-            row++
+            y += cell; row++
         }
     }
 }
@@ -368,20 +351,8 @@ private fun renderOnion(project: ProjectState, frameIndex: Int, layerIndex: Int,
     val sourceFrame = project.frames.getOrNull(frameIndex) ?: return FrameRenderer.renderPreview(project, frameIndex.coerceIn(project.frames.indices))
     val sourceLayer = sourceFrame.layers.getOrNull(layerIndex) ?: return FrameRenderer.renderPreview(project, frameIndex)
     val temporary = ProjectState(
-        name = "onion",
-        canvasWidth = project.canvasWidth,
-        canvasHeight = project.canvasHeight,
-        backgroundArgb = AndroidColor.TRANSPARENT,
-        frames = listOf(
-            FrameState(
-                duration = sourceFrame.durationMs,
-                layers = listOf(sourceLayer.cloneLayer()),
-                cameraX = sourceFrame.cameraX,
-                cameraY = sourceFrame.cameraY,
-                cameraZoom = sourceFrame.cameraZoom,
-                cameraRotation = sourceFrame.cameraRotation
-            )
-        )
+        name = "onion", canvasWidth = project.canvasWidth, canvasHeight = project.canvasHeight, backgroundArgb = AndroidColor.TRANSPARENT,
+        frames = listOf(FrameState(duration = sourceFrame.durationMs, layers = listOf(sourceLayer.cloneLayer()), cameraX = sourceFrame.cameraX, cameraY = sourceFrame.cameraY, cameraZoom = sourceFrame.cameraZoom, cameraRotation = sourceFrame.cameraRotation))
     )
     return FrameRenderer.renderPreview(temporary, 0)
 }
@@ -396,29 +367,17 @@ private fun projectToLocalY(point: CanvasPoint, size: IntSize, project: ProjectS
 private fun toLayerPoint(editor: EditorState, visible: CanvasPoint): CanvasPoint = SelectionTools.inverseLayer(editor.project, editor.layer, SelectionTools.inverseCamera(editor.project, editor.frame, visible))
 
 private fun localToVisible(editor: EditorState, local: CanvasPoint): CanvasPoint {
-    val project = editor.project
-    val layer = editor.layer
-    val frame = editor.frame
-    val cx = project.canvasWidth / 2f
-    val cy = project.canvasHeight / 2f
-    var x = local.x - cx
-    var y = local.y - cy
+    val project = editor.project; val layer = editor.layer; val frame = editor.frame
+    val cx = project.canvasWidth / 2f; val cy = project.canvasHeight / 2f
+    var x = local.x - cx; var y = local.y - cy
     val lr = Math.toRadians(layer.rotationDeg.toDouble())
-    val lsx = layer.scaleX.takeIf { abs(it) > .0001f } ?: 1f
-    val lsy = layer.scaleY.takeIf { abs(it) > .0001f } ?: 1f
-    val lx = x * lsx
-    val ly = y * lsy
+    val lsx = layer.scaleX.takeIf { abs(it) > .0001f } ?: 1f; val lsy = layer.scaleY.takeIf { abs(it) > .0001f } ?: 1f
+    val lx = x * lsx; val ly = y * lsy
     x = lx * cos(lr).toFloat() - ly * sin(lr).toFloat() + cx + layer.offsetX
     y = lx * sin(lr).toFloat() + ly * cos(lr).toFloat() + cy + layer.offsetY
-    x -= cx
-    y -= cy
-    val fr = Math.toRadians(frame.cameraRotation.toDouble())
-    val fx = x * frame.cameraZoom
-    val fy = y * frame.cameraZoom
-    return CanvasPoint(
-        fx * cos(fr).toFloat() - fy * sin(fr).toFloat() + cx + frame.cameraX,
-        fx * sin(fr).toFloat() + fy * cos(fr).toFloat() + cy + frame.cameraY
-    )
+    x -= cx; y -= cy
+    val fr = Math.toRadians(frame.cameraRotation.toDouble()); val fx = x * frame.cameraZoom; val fy = y * frame.cameraZoom
+    return CanvasPoint(fx * cos(fr).toFloat() - fy * sin(fr).toFloat() + cx + frame.cameraX, fx * sin(fr).toFloat() + fy * cos(fr).toFloat() + cy + frame.cameraY)
 }
 
 private fun pressureFor(event: MotionEvent, historyIndex: Int? = null): Float {
@@ -432,34 +391,24 @@ private fun rectanglePoints(a: CanvasPoint, b: CanvasPoint): List<CanvasPoint> {
 }
 
 private fun ellipsePoints(a: CanvasPoint, b: CanvasPoint): List<CanvasPoint> {
-    val cx = (a.x + b.x) / 2f; val cy = (a.y + b.y) / 2f
-    val rx = abs(b.x - a.x) / 2f; val ry = abs(b.y - a.y) / 2f
-    return List(65) { i ->
-        val angle = Math.PI * 2.0 * i / 64.0
-        CanvasPoint(cx + cos(angle).toFloat() * rx, cy + sin(angle).toFloat() * ry)
-    }
+    val cx = (a.x + b.x) / 2f; val cy = (a.y + b.y) / 2f; val rx = abs(b.x - a.x) / 2f; val ry = abs(b.y - a.y) / 2f
+    return List(65) { i -> val angle = Math.PI * 2.0 * i / 64.0; CanvasPoint(cx + cos(angle).toFloat() * rx, cy + sin(angle).toFloat() * ry) }
 }
 
 private fun selectCurrentLayerPolygon(editor: EditorState, polygon: List<CanvasPoint>) {
     if (polygon.size < 3) return
     val localPolygon = polygon.map { toLayerPoint(editor, it) }
-    editor.selectedRasterLayerIndex = -1
-    editor.selectedIds.clear()
-    editor.layer.strokes.forEach { stroke ->
-        if (stroke.points.any { pointInPolygonRelease(it, localPolygon) }) editor.selectedIds.add(stroke.id)
-    }
+    editor.selectedRasterLayerIndex = -1; editor.selectedIds.clear()
+    editor.layer.strokes.forEach { stroke -> if (stroke.points.any { pointInPolygonRelease(it, localPolygon) }) editor.selectedIds.add(stroke.id) }
 }
 
 private fun pointInPolygonRelease(point: CanvasPoint, polygon: List<CanvasPoint>): Boolean {
-    var inside = false
-    var j = polygon.lastIndex
+    var inside = false; var j = polygon.lastIndex
     for (i in polygon.indices) {
-        val a = polygon[i]
-        val b = polygon[j]
+        val a = polygon[i]; val b = polygon[j]
         val denominator = (b.y - a.y).takeIf { abs(it) > .00001f } ?: .00001f
         val crosses = (a.y > point.y) != (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / denominator + a.x
-        if (crosses) inside = !inside
-        j = i
+        if (crosses) inside = !inside; j = i
     }
     return inside
 }
