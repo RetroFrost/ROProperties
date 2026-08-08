@@ -65,15 +65,8 @@ jobs:
             adb install -r frameflow/app/build/outputs/apk/debug/app-debug.apk
             adb shell am force-stop com.frameflow.app
             adb shell am start -W -n com.frameflow.app/.MainActivity
-            sleep 4
-            if ! adb shell pidof com.frameflow.app >/dev/null; then
-              echo 'Frameflow process died during launch.'
-              adb logcat -d -v brief | tail -n 500
-              exit 1
-            fi
-            adb shell dumpsys activity activities | grep -q 'com.frameflow.app/.MainActivity' || {
-              echo 'Frameflow activity is not resumed after launch.'
-              adb logcat -d -v brief | tail -n 500
-              exit 1
-            }
+            sleep 5
+            test -n "$(adb shell pidof com.frameflow.app)"
+            adb shell dumpsys activity activities | grep -q 'com.frameflow.app/.MainActivity'
+            adb logcat -d -v brief | grep -E 'FATAL EXCEPTION|AndroidRuntime|com.frameflow.app' | tail -n 200 || true
             echo 'Frameflow launch smoke test passed.'
