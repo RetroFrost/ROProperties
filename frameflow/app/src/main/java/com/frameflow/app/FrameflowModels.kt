@@ -9,11 +9,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import java.util.UUID
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 
-const val FRAMEFLOW_FORMAT_VERSION = 2
+const val FRAMEFLOW_FORMAT_VERSION = 3
 
 enum class Tool { Brush, Eraser, SmartSelect, ColorRepeat }
+
+enum class ProjectMode(val label: String) {
+    Static("Static animation"),
+    Auto("Auto animation"),
+    ObjectShow("Object show")
+}
 
 enum class Part(val label: String) {
     None("None"),
@@ -50,33 +60,74 @@ class LayerState(
     part: Part,
     strokes: List<StrokeData> = emptyList(),
     visible: Boolean = true,
-    locked: Boolean = false
+    locked: Boolean = false,
+    opacity: Float = 1f,
+    offsetX: Float = 0f,
+    offsetY: Float = 0f,
+    scaleX: Float = 1f,
+    scaleY: Float = 1f,
+    rotationDeg: Float = 0f,
+    rasterPngBase64: String? = null,
+    rasterName: String? = null
 ) {
     var name by mutableStateOf(name)
     var part by mutableStateOf(part)
     var visible by mutableStateOf(visible)
     var locked by mutableStateOf(locked)
+    var opacity by mutableFloatStateOf(opacity.coerceIn(0f, 1f))
+    var offsetX by mutableFloatStateOf(offsetX)
+    var offsetY by mutableFloatStateOf(offsetY)
+    var scaleX by mutableFloatStateOf(scaleX)
+    var scaleY by mutableFloatStateOf(scaleY)
+    var rotationDeg by mutableFloatStateOf(rotationDeg)
+    var rasterPngBase64 by mutableStateOf(rasterPngBase64)
+    var rasterName by mutableStateOf(rasterName)
     val strokes = mutableStateListOf<StrokeData>().apply { addAll(strokes) }
+
+    val hasRaster: Boolean get() = !rasterPngBase64.isNullOrBlank()
 
     fun cloneLayer() = LayerState(
         name = name,
         part = part,
         strokes = strokes.map { stroke -> stroke.copy(points = stroke.points.toList()) },
         visible = visible,
-        locked = locked
+        locked = locked,
+        opacity = opacity,
+        offsetX = offsetX,
+        offsetY = offsetY,
+        scaleX = scaleX,
+        scaleY = scaleY,
+        rotationDeg = rotationDeg,
+        rasterPngBase64 = rasterPngBase64,
+        rasterName = rasterName
     )
 }
 
 class FrameState(
     duration: Int = 1000,
-    layers: List<LayerState> = defaultLayers()
+    layers: List<LayerState> = defaultLayers(),
+    label: String = "",
+    cameraX: Float = 0f,
+    cameraY: Float = 0f,
+    cameraZoom: Float = 1f,
+    cameraRotation: Float = 0f
 ) {
     var durationMs by mutableIntStateOf(duration)
+    var label by mutableStateOf(label)
+    var cameraX by mutableFloatStateOf(cameraX)
+    var cameraY by mutableFloatStateOf(cameraY)
+    var cameraZoom by mutableFloatStateOf(cameraZoom.coerceAtLeast(.05f))
+    var cameraRotation by mutableFloatStateOf(cameraRotation)
     val layers = mutableStateListOf<LayerState>().apply { addAll(layers) }
 
     fun cloneFrame() = FrameState(
         duration = durationMs,
-        layers = layers.map { it.cloneLayer() }
+        layers = layers.map { it.cloneLayer() },
+        label = label,
+        cameraX = cameraX,
+        cameraY = cameraY,
+        cameraZoom = cameraZoom,
+        cameraRotation = cameraRotation
     )
 }
 
@@ -87,7 +138,14 @@ class ProjectState(
     canvasHeight: Int = 1080,
     backgroundArgb: Int = 0xFFFFFFFF.toInt(),
     frames: List<FrameState> = listOf(FrameState()),
-    modified: Long = System.currentTimeMillis()
+    modified: Long = System.currentTimeMillis(),
+    mode: ProjectMode = ProjectMode.Static,
+    fps: Int = 30,
+    loopPlayback: Boolean = true,
+    snapMs: Int = 100,
+    audioFileName: String? = null,
+    audioOffsetMs: Int = 0,
+    audioVolume: Float = 1f
 ) {
     var name by mutableStateOf(name)
     var canvasWidth by mutableIntStateOf(canvasWidth)
@@ -95,7 +153,16 @@ class ProjectState(
     var backgroundArgb by mutableIntStateOf(backgroundArgb)
     var modifiedAt by mutableLongStateOf(modified)
     var revision by mutableIntStateOf(0)
+    var mode by mutableStateOf(mode)
+    var fps by mutableIntStateOf(fps.coerceIn(1, 60))
+    var loopPlayback by mutableStateOf(loopPlayback)
+    var snapMs by mutableIntStateOf(snapMs.coerceIn(10, 5000))
+    var audioFileName by mutableStateOf(audioFileName)
+    var audioOffsetMs by mutableIntStateOf(audioOffsetMs)
+    var audioVolume by mutableFloatStateOf(audioVolume.coerceIn(0f, 1f))
     val frames = mutableStateListOf<FrameState>().apply { addAll(frames.ifEmpty { listOf(FrameState()) }) }
+
+    val totalDurationMs: Int get() = frames.sumOf { it.durationMs }
 
     fun touch() {
         revision++
@@ -107,6 +174,13 @@ class ProjectState(
         canvasWidth = other.canvasWidth
         canvasHeight = other.canvasHeight
         backgroundArgb = other.backgroundArgb
+        mode = other.mode
+        fps = other.fps
+        loopPlayback = other.loopPlayback
+        snapMs = other.snapMs
+        audioFileName = other.audioFileName
+        audioOffsetMs = other.audioOffsetMs
+        audioVolume = other.audioVolume
         frames.clear()
         frames.addAll(other.frames.map { it.cloneFrame() })
         if (markDirty) touch()
@@ -170,6 +244,7 @@ class EditorState(val project: ProjectState) {
     var onionNext by mutableStateOf(false)
     var onionAlpha by mutableFloatStateOf(.18f)
     var playing by mutableStateOf(false)
+    var selectedRasterLayerIndex by mutableIntStateOf(-1)
     val selectedIds = mutableStateListOf<String>()
 
     val frame: FrameState
@@ -194,6 +269,7 @@ class EditorState(val project: ProjectState) {
             project.frames[frameIndex].layers.add(LayerState("Layer 1", Part.None))
         }
         layerIndex = layerIndex.coerceIn(project.frames[frameIndex].layers.indices)
+        if (selectedRasterLayerIndex !in frame.layers.indices) selectedRasterLayerIndex = -1
     }
 
     fun addBlankFrame() {
@@ -201,14 +277,14 @@ class EditorState(val project: ProjectState) {
         project.frames.add(frameIndex + 1, FrameState(frame.durationMs, layers))
         frameIndex++
         layerIndex = layerIndex.coerceIn(project.frames[frameIndex].layers.indices)
-        selectedIds.clear()
+        clearSelection()
         project.touch()
     }
 
     fun cloneFrame() {
         project.frames.add(frameIndex + 1, frame.cloneFrame())
         frameIndex++
-        selectedIds.clear()
+        clearSelection()
         project.touch()
     }
 
@@ -221,7 +297,7 @@ class EditorState(val project: ProjectState) {
             frameIndex = frameIndex.coerceAtMost(project.frames.lastIndex)
         }
         layerIndex = 0
-        selectedIds.clear()
+        clearSelection()
         project.touch()
     }
 
@@ -237,6 +313,15 @@ class EditorState(val project: ProjectState) {
     fun addLayer() {
         frame.layers.add(0, LayerState("Layer ${frame.layers.size + 1}", Part.None))
         layerIndex = 0
+        clearSelection()
+        project.touch()
+    }
+
+    fun addRasterLayer(base64Png: String, name: String, part: Part = Part.None) {
+        frame.layers.add(0, LayerState(name, part, rasterPngBase64 = base64Png, rasterName = name))
+        layerIndex = 0
+        selectedRasterLayerIndex = 0
+        selectedIds.clear()
         project.touch()
     }
 
@@ -248,13 +333,14 @@ class EditorState(val project: ProjectState) {
     fun deleteLayer() {
         if (frame.layers.size == 1) {
             frame.layers[0].strokes.clear()
+            frame.layers[0].rasterPngBase64 = null
             frame.layers[0].name = "Layer 1"
             frame.layers[0].part = Part.None
         } else {
             frame.layers.removeAt(layerIndex)
             layerIndex = layerIndex.coerceAtMost(frame.layers.lastIndex)
         }
-        selectedIds.clear()
+        clearSelection()
         project.touch()
     }
 
@@ -264,7 +350,20 @@ class EditorState(val project: ProjectState) {
         val item = frame.layers.removeAt(layerIndex)
         frame.layers.add(destination, item)
         layerIndex = destination
+        if (selectedRasterLayerIndex >= 0) selectedRasterLayerIndex = destination
         project.touch()
+    }
+
+    fun clearSelection() {
+        selectedIds.clear()
+        selectedRasterLayerIndex = -1
+    }
+
+    fun selectLayer(index: Int) {
+        if (index !in frame.layers.indices) return
+        layerIndex = index
+        selectedIds.clear()
+        selectedRasterLayerIndex = if (frame.layers[index].hasRaster) index else -1
     }
 
     fun selectWholePartAt(point: CanvasPoint) {
@@ -272,11 +371,12 @@ class EditorState(val project: ProjectState) {
             if (!candidateLayer.visible) null
             else candidateLayer.strokes.asReversed().firstOrNull { hitStroke(it, point) }?.let { candidateLayer to it }
         } ?: run {
-            selectedIds.clear()
+            clearSelection()
             return
         }
         val targetPart = hit.first.part
         selectedIds.clear()
+        selectedRasterLayerIndex = -1
         if (targetPart != Part.None && targetPart != Part.Background) {
             frame.layers.filter { it.part == targetPart }
                 .flatMap { it.strokes }
@@ -290,16 +390,24 @@ class EditorState(val project: ProjectState) {
         val hit = frame.layers.asReversed().firstNotNullOfOrNull { candidateLayer ->
             candidateLayer.strokes.asReversed().firstOrNull { !it.erase && hitStroke(it, point) }
         } ?: run {
-            selectedIds.clear()
+            clearSelection()
             return
         }
         selectedIds.clear()
+        selectedRasterLayerIndex = -1
         frame.layers.flatMap { it.strokes }
             .filter { !it.erase && colorDistance(it.colorArgb, hit.colorArgb) < .08f }
             .forEach { selectedIds.add(it.id) }
     }
 
     fun moveSelection(dx: Float, dy: Float) {
+        if (selectedRasterLayerIndex in frame.layers.indices) {
+            val selected = frame.layers[selectedRasterLayerIndex]
+            selected.offsetX += dx
+            selected.offsetY += dy
+            project.touch()
+            return
+        }
         if (selectedIds.isEmpty()) return
         val ids = selectedIds.toSet()
         frame.layers.forEach { candidateLayer ->
@@ -315,13 +423,112 @@ class EditorState(val project: ProjectState) {
         project.touch()
     }
 
+    fun rotateSelection(degrees: Float) = transformVectorSelection(rotation = degrees)
+
+    fun scaleSelection(scale: Float) = transformVectorSelection(scaleX = scale, scaleY = scale)
+
+    fun flipSelectionHorizontal() = transformVectorSelection(scaleX = -1f, scaleY = 1f)
+
+    fun transformSelectedRaster(dx: Float = 0f, dy: Float = 0f, scale: Float = 1f, rotation: Float = 0f) {
+        if (selectedRasterLayerIndex !in frame.layers.indices) return
+        val selected = frame.layers[selectedRasterLayerIndex]
+        selected.offsetX += dx
+        selected.offsetY += dy
+        selected.scaleX = (selected.scaleX * scale).coerceIn(-20f, 20f)
+        selected.scaleY = (selected.scaleY * scale).coerceIn(-20f, 20f)
+        selected.rotationDeg += rotation
+        project.touch()
+    }
+
+    fun duplicateSelection() {
+        if (selectedRasterLayerIndex in frame.layers.indices) {
+            val source = frame.layers[selectedRasterLayerIndex]
+            frame.layers.add(selectedRasterLayerIndex, source.cloneLayer().also {
+                it.name = "${source.name} copy"
+                it.offsetX += 24f
+                it.offsetY += 24f
+            })
+            selectedRasterLayerIndex = selectedRasterLayerIndex
+            project.touch()
+            return
+        }
+        if (selectedIds.isEmpty()) return
+        val ids = selectedIds.toSet()
+        val created = mutableListOf<String>()
+        frame.layers.forEach { candidateLayer ->
+            val copies = candidateLayer.strokes.filter { it.id in ids }.map { stroke ->
+                stroke.copy(
+                    id = UUID.randomUUID().toString(),
+                    points = stroke.points.map { CanvasPoint(it.x + 24f, it.y + 24f) }
+                ).also { created += it.id }
+            }
+            candidateLayer.strokes.addAll(copies)
+        }
+        selectedIds.clear()
+        selectedIds.addAll(created)
+        project.touch()
+    }
+
+    fun recolorSelection(argb: Int) {
+        if (selectedIds.isEmpty()) return
+        val ids = selectedIds.toSet()
+        frame.layers.forEach { candidateLayer ->
+            for (index in candidateLayer.strokes.indices) {
+                val stroke = candidateLayer.strokes[index]
+                if (stroke.id in ids && !stroke.erase) candidateLayer.strokes[index] = stroke.copy(colorArgb = argb)
+            }
+        }
+        project.touch()
+    }
+
     fun deleteSelection() {
+        if (selectedRasterLayerIndex in frame.layers.indices) {
+            val index = selectedRasterLayerIndex
+            if (frame.layers.size > 1) frame.layers.removeAt(index) else frame.layers[index].rasterPngBase64 = null
+            layerIndex = layerIndex.coerceAtMost(frame.layers.lastIndex)
+            clearSelection()
+            project.touch()
+            return
+        }
         if (selectedIds.isEmpty()) return
         val ids = selectedIds.toSet()
         frame.layers.forEach { candidateLayer ->
             candidateLayer.strokes.removeAll { it.id in ids }
         }
-        selectedIds.clear()
+        clearSelection()
+        project.touch()
+    }
+
+    private fun transformVectorSelection(rotation: Float = 0f, scaleX: Float = 1f, scaleY: Float = 1f) {
+        if (selectedRasterLayerIndex in frame.layers.indices) {
+            val selected = frame.layers[selectedRasterLayerIndex]
+            selected.rotationDeg += rotation
+            selected.scaleX = (selected.scaleX * scaleX).coerceIn(-20f, 20f)
+            selected.scaleY = (selected.scaleY * scaleY).coerceIn(-20f, 20f)
+            project.touch()
+            return
+        }
+        if (selectedIds.isEmpty()) return
+        val ids = selectedIds.toSet()
+        val points = frame.layers.flatMap { it.strokes }.filter { it.id in ids }.flatMap { it.points }
+        if (points.isEmpty()) return
+        val cx = (points.minOf { it.x } + points.maxOf { it.x }) / 2f
+        val cy = (points.minOf { it.y } + points.maxOf { it.y }) / 2f
+        val radians = Math.toRadians(rotation.toDouble())
+        val c = cos(radians).toFloat()
+        val s = sin(radians).toFloat()
+        frame.layers.forEach { candidateLayer ->
+            for (index in candidateLayer.strokes.indices) {
+                val stroke = candidateLayer.strokes[index]
+                if (stroke.id !in ids) continue
+                val transformed = stroke.points.map { point ->
+                    val sx = (point.x - cx) * scaleX
+                    val sy = (point.y - cy) * scaleY
+                    CanvasPoint(cx + sx * c - sy * s, cy + sx * s + sy * c)
+                }
+                candidateLayer.strokes[index] = stroke.copy(points = transformed)
+            }
+        }
         project.touch()
     }
 }
