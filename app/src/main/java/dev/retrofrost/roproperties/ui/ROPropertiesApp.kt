@@ -58,14 +58,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.retrofrost.roproperties.io.ImportProfileAnalyzer
 import dev.retrofrost.roproperties.io.ImportedPropertyValue
 import dev.retrofrost.roproperties.io.PropertyTextFormat
+import dev.retrofrost.roproperties.model.ApplyStrategy
 import dev.retrofrost.roproperties.model.EditMode
 import dev.retrofrost.roproperties.model.KnowledgeConfidence
 import dev.retrofrost.roproperties.model.PropertyCategory
@@ -81,58 +82,49 @@ import kotlinx.coroutines.withContext
 fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
 
     var selected by remember { mutableStateOf<PropertyUiItem?>(null) }
     var editing by remember { mutableStateOf<PropertyUiItem?>(null) }
-    var showImportDialog by remember { mutableStateOf(false) }
+    var showImport by remember { mutableStateOf(false) }
+    var showRebootConfirm by remember { mutableStateOf(false) }
     var importText by rememberSaveable { mutableStateOf("") }
-    var pendingExportText by remember { mutableStateOf<String?>(null) }
+    var pendingExport by remember { mutableStateOf<String?>(null) }
 
     val parsedImport = remember(importText) { PropertyTextFormat.parse(importText) }
 
-    val saveTextLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("text/plain"),
-    ) { uri ->
-        val text = pendingExportText
+    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        val text = pendingExport
         if (uri != null && text != null) {
             scope.launch {
-                val success = runCatching {
+                val ok = runCatching {
                     withContext(Dispatchers.IO) {
-                        context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
-                            writer.write(text)
-                        } ?: error("Could not open the selected file")
+                        context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(text) }
+                            ?: error("Could not open destination")
                     }
                 }.isSuccess
-                viewModel.showMessage(
-                    if (success) "Selected properties exported to TXT." else "Could not export the TXT file."
-                )
-                if (success) viewModel.cancelSelection()
+                viewModel.showMessage(if (ok) "Selected properties exported to TXT." else "Could not export TXT.")
+                if (ok) viewModel.cancelSelection()
             }
         }
-        pendingExportText = null
+        pendingExport = null
     }
 
-    val openTextLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
+    val openLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             scope.launch {
-                val loaded = runCatching {
+                runCatching {
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                            ?: error("Could not open the selected file")
+                            ?: error("Could not read file")
                     }
-                }
-                loaded.onSuccess {
+                }.onSuccess {
                     importText = it
-                    showImportDialog = true
-                }.onFailure {
-                    viewModel.showMessage("Could not read that text file.")
-                }
+                    showImport = true
+                }.onFailure { viewModel.showMessage("Could not read that text file.") }
             }
         }
     }
@@ -150,23 +142,22 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
         drawerContent = {
             AppDrawer(
                 state = state,
-                onCategorySelected = { category ->
-                    viewModel.setCategory(category)
+                onCategory = {
+                    viewModel.setCategory(it)
                     scope.launch { drawerState.close() }
                 },
-                onConfidenceSelected = { confidence ->
-                    viewModel.setConfidenceFilter(confidence)
+                onConfidence = {
+                    viewModel.setConfidenceFilter(it)
                     scope.launch { drawerState.close() }
                 },
-                onImportRequested = {
+                onImport = {
                     scope.launch { drawerState.close() }
-                    showImportDialog = true
+                    showImport = true
                 },
             )
         },
     ) {
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 TopAppBar(
                     title = {
@@ -177,11 +168,7 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                if (state.selectionMode) {
-                                    "Select properties to export"
-                                } else {
-                                    "${state.filteredProperties.size} properties"
-                                },
+                                if (state.selectionMode) "Select properties to export" else "${state.filteredProperties.size} properties",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -191,9 +178,7 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
                         if (state.selectionMode) {
                             TextButton(onClick = viewModel::cancelSelection) { Text("Cancel") }
                         } else {
-                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                TwoLineMenuGlyph()
-                            }
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) { TwoLineMenuGlyph() }
                         }
                     },
                     actions = {
@@ -202,30 +187,22 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
                                 Text(if (state.allFilteredSelected) "Clear all" else "Select all")
                             }
                         } else {
-                            TextButton(onClick = viewModel::beginSelection, enabled = !state.loading) {
-                                Text("Select")
-                            }
-                            TextButton(onClick = viewModel::refresh, enabled = !state.loading) {
-                                Text("Refresh")
-                            }
+                            TextButton(onClick = viewModel::beginSelection, enabled = !state.loading) { Text("Select") }
+                            TextButton(onClick = viewModel::refresh, enabled = !state.loading) { Text("Refresh") }
                         }
                     },
                 )
             },
             bottomBar = {
                 if (state.selectionMode) {
-                    SelectionBottomBar(
-                        selectedCount = state.selectedNames.size,
-                        onExport = {
-                            if (state.selectedProperties.isEmpty()) {
-                                viewModel.showMessage("Select at least one property first.")
-                            } else {
-                                val text = PropertyTextFormat.export(state.selectedProperties.map { it.property })
-                                pendingExportText = text
-                                saveTextLauncher.launch("ROProperties-${state.selectedNames.size}-properties.txt")
-                            }
-                        },
-                    )
+                    SelectionBottomBar(state.selectedNames.size) {
+                        if (state.selectedProperties.isEmpty()) {
+                            viewModel.showMessage("Select at least one property first.")
+                        } else {
+                            pendingExport = PropertyTextFormat.export(state.selectedProperties.map { it.property })
+                            saveLauncher.launch("ROProperties-${state.selectedNames.size}-properties.txt")
+                        }
+                    }
                 }
             },
             snackbarHost = { SnackbarHost(snackbar) },
@@ -233,9 +210,11 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
             MainContent(
                 state = state,
                 modifier = Modifier.padding(padding),
-                onQueryChanged = viewModel::setQuery,
-                onPropertySelected = { selected = it },
-                onToggleSelection = { viewModel.toggleSelection(it.property.name) },
+                onQuery = viewModel::setQuery,
+                onProperty = { selected = it },
+                onToggle = { viewModel.toggleSelection(it.property.name) },
+                onReboot = { showRebootConfirm = true },
+                onDismissReboot = viewModel::clearRebootRecommendation,
             )
         }
     }
@@ -243,9 +222,7 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
     selected?.let { item ->
         PropertyDetailsSheet(
             item = item,
-            canEdit = state.capabilities.rootAvailable,
-            runtimeAvailable = state.capabilities.resetPropAvailable,
-            persistentAvailable = state.capabilities.modulePersistenceAvailable,
+            state = state,
             onDismiss = { selected = null },
             onEdit = { editing = item },
         )
@@ -266,7 +243,7 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
         )
     }
 
-    if (showImportDialog) {
+    if (showImport) {
         ImportPropertiesDialog(
             text = importText,
             parsedValues = parsedImport,
@@ -276,204 +253,63 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
             rootAvailable = state.capabilities.rootAvailable,
             applying = state.applying,
             onTextChanged = { importText = it },
-            onChooseFile = { openTextLauncher.launch(arrayOf("text/plain", "text/*", "application/octet-stream")) },
+            onChooseFile = { openLauncher.launch(arrayOf("text/plain", "text/*", "application/octet-stream")) },
             onPaste = {
                 val pasted = clipboard.getText()?.text.orEmpty()
                 if (pasted.isBlank()) viewModel.showMessage("Clipboard does not contain text.") else importText = pasted
             },
-            onDismiss = { if (!state.applying) showImportDialog = false },
+            onDismiss = { if (!state.applying) showImport = false },
             onApply = { values, mode ->
                 viewModel.applyImported(values, mode)
-                showImportDialog = false
+                showImport = false
             },
         )
     }
-}
 
-@Composable
-private fun SelectionBottomBar(selectedCount: Int, onExport: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "$selectedCount selected",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Button(onClick = onExport, enabled = selectedCount > 0) {
-                Text("Export TXT")
-            }
-        }
-    }
-}
-
-@Composable
-private fun AppDrawer(
-    state: MainUiState,
-    onCategorySelected: (PropertyCategory) -> Unit,
-    onConfidenceSelected: (KnowledgeConfidence?) -> Unit,
-    onImportRequested: () -> Unit,
-) {
-    ModalDrawerSheet(
-        drawerContainerColor = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.width(320.dp),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp),
-        ) {
-            Spacer(Modifier.height(20.dp))
-            Text(
-                "ROProperties",
-                modifier = Modifier.padding(horizontal = 12.dp),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                "Android property editor",
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            Spacer(Modifier.height(22.dp))
-            DrawerSectionTitle("Properties")
-            PropertyCategory.entries.forEach { category ->
-                DrawerRow(
-                    title = category.label,
-                    subtitle = "${state.countFor(category)}",
-                    selected = state.category == category,
-                    onClick = { onCategorySelected(category) },
-                )
-            }
-
-            Spacer(Modifier.height(18.dp))
-            DrawerSectionTitle("Confidence")
-            DrawerRow(
-                title = "Any confidence",
-                selected = state.confidenceFilter == null,
-                onClick = { onConfidenceSelected(null) },
-            )
-            KnowledgeConfidence.entries.forEach { confidence ->
-                DrawerRow(
-                    title = confidence.label,
-                    selected = state.confidenceFilter == confidence,
-                    onClick = { onConfidenceSelected(confidence) },
-                )
-            }
-
-            Spacer(Modifier.height(18.dp))
-            DrawerSectionTitle("Tools")
-            DrawerRow(
-                title = "Import properties",
-                subtitle = "TXT or paste",
-                selected = false,
-                onClick = onImportRequested,
-            )
-
-            Spacer(Modifier.height(18.dp))
-            DrawerSectionTitle("Editing modes")
-            EditMode.entries.forEach { mode ->
-                ModeInfoCard(mode)
-                Spacer(Modifier.height(8.dp))
-            }
-
-            Spacer(Modifier.height(18.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Spacer(Modifier.height(16.dp))
-            RootStatusCard(state)
-            Spacer(Modifier.height(24.dp))
-        }
-    }
-}
-
-@Composable
-private fun ModeInfoCard(mode: EditMode) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-    ) {
-        Column(Modifier.padding(12.dp)) {
-            Text(mode.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(3.dp))
-            Text(
-                mode.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun DrawerSectionTitle(text: String) {
-    Text(
-        text,
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
-
-@Composable
-private fun DrawerRow(
-    title: String,
-    subtitle: String? = null,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            )
-            subtitle?.let {
-                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
+    if (showRebootConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRebootConfirm = false },
+            title = { Text("Reboot device?") },
+            text = { Text("A reboot lets boot-time and cached Android identity values be read again by fresh framework and app processes. Unsaved work in other apps will be lost.") },
+            confirmButton = {
+                Button(onClick = {
+                    showRebootConfirm = false
+                    viewModel.rebootDevice()
+                }) { Text("Reboot now") }
+            },
+            dismissButton = { TextButton(onClick = { showRebootConfirm = false }) { Text("Not now") } },
+        )
     }
 }
 
 @Composable
 private fun MainContent(
     state: MainUiState,
-    modifier: Modifier = Modifier,
-    onQueryChanged: (String) -> Unit,
-    onPropertySelected: (PropertyUiItem) -> Unit,
-    onToggleSelection: (PropertyUiItem) -> Unit,
+    modifier: Modifier,
+    onQuery: (String) -> Unit,
+    onProperty: (PropertyUiItem) -> Unit,
+    onToggle: (PropertyUiItem) -> Unit,
+    onReboot: () -> Unit,
+    onDismissReboot: () -> Unit,
 ) {
-    Column(
-        modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
-    ) {
+    Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(8.dp))
-        SearchField(query = state.query, onQueryChanged = onQueryChanged)
-        Spacer(Modifier.height(14.dp))
+        SearchField(state.query, onQuery)
+        Spacer(Modifier.height(12.dp))
+
+        if (state.rebootRecommended && !state.selectionMode) {
+            RebootBanner(state.rebootReason, onReboot, onDismissReboot)
+            Spacer(Modifier.height(12.dp))
+        }
 
         if (state.category != PropertyCategory.ALL) {
             CategoryIntro(state.category)
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
         }
 
         when {
-            state.loading -> LoadingState()
-            state.filteredProperties.isEmpty() -> EmptyState(state)
+            state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            state.filteredProperties.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No matching properties") }
             else -> LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -483,10 +319,8 @@ private fun MainContent(
                         item = item,
                         selectionMode = state.selectionMode,
                         selected = item.property.name in state.selectedNames,
-                        onClick = {
-                            if (state.selectionMode) onToggleSelection(item) else onPropertySelected(item)
-                        },
-                        onToggleSelection = { onToggleSelection(item) },
+                        onClick = { if (state.selectionMode) onToggle(item) else onProperty(item) },
+                        onToggle = { onToggle(item) },
                     )
                 }
                 item { Spacer(Modifier.height(28.dp)) }
@@ -496,79 +330,40 @@ private fun MainContent(
 }
 
 @Composable
-private fun SearchField(query: String, onQueryChanged: (String) -> Unit) {
+private fun SearchField(query: String, onQuery: (String) -> Unit) {
     OutlinedTextField(
         value = query,
-        onValueChange = onQueryChanged,
+        onValueChange = onQuery,
         modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text("Search properties") },
-        leadingIcon = {
-            Text("⌕", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        },
-        trailingIcon = if (query.isNotEmpty()) {
-            {
-                Text(
-                    "×",
-                    modifier = Modifier.clickable { onQueryChanged("") }.padding(8.dp),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        } else null,
+        placeholder = { Text("Search name, value, meaning or editability") },
         singleLine = true,
         shape = RoundedCornerShape(28.dp),
+        trailingIcon = if (query.isNotEmpty()) {
+            { Text("×", modifier = Modifier.clickable { onQuery("") }.padding(8.dp)) }
+        } else null,
     )
 }
 
 @Composable
-private fun CategoryIntro(category: PropertyCategory) {
+private fun RebootBanner(reason: String?, onReboot: () -> Unit, onDismiss: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(category.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(5.dp))
-            Text(category.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (category == PropertyCategory.SPOOFING) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "This groups identity-facing properties only. Changing them can affect compatibility and does not guarantee any integrity or app-compatibility result.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        Column(Modifier.padding(14.dp)) {
+            Text("Reboot recommended", fontWeight = FontWeight.SemiBold)
+            Text(
+                reason ?: "Boot/cache-sensitive overrides are pending.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onReboot) { Text("Reboot now") }
+                TextButton(onClick = onDismiss) { Text("Dismiss") }
             }
         }
-    }
-}
-
-@Composable
-private fun LoadingState() {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        CircularProgressIndicator()
-        Spacer(Modifier.height(12.dp))
-        Text("Reading Android properties…")
-    }
-}
-
-@Composable
-private fun EmptyState(state: MainUiState) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text("No properties here", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            if (state.query.isNotBlank()) "Try another search." else "This device does not expose matching ro.* values.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -578,35 +373,28 @@ private fun PropertyRow(
     selectionMode: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
-    onToggleSelection: () -> Unit,
+    onToggle: () -> Unit,
 ) {
-    val isSpoofing = PropertyCategoryClassifier.isSpoofingProperty(item.property.name)
+    val serviceFrameworkMismatch = item.frameworkValue != null && item.frameworkValue != item.property.value
     Surface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
         color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.Top) {
             if (selectionMode) {
-                Checkbox(checked = selected, onCheckedChange = { onToggleSelection() })
+                Checkbox(checked = selected, onCheckedChange = { onToggle() })
                 Spacer(Modifier.width(6.dp))
             }
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+            Column(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(
-                        text = item.property.name,
+                        item.property.name,
                         modifier = Modifier.fillMaxWidth(0.78f),
-                        style = MaterialTheme.typography.titleSmall,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.titleSmall,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -616,94 +404,32 @@ private fun PropertyRow(
                         color = if (item.explanation.risk >= RiskLevel.HIGH) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Spacer(Modifier.height(7.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
                     item.property.value.ifEmpty { "(empty)" },
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
                     fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(Modifier.height(7.dp))
-                Text(
-                    item.explanation.propertyMeaning,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MiniLabel(item.explanation.confidence.label)
-                    if (isSpoofing) MiniLabel("Spoofing")
+                if (serviceFrameworkMismatch) {
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        "Framework cache differs",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                } else if (item.persistentOverride != null && item.persistentOverride != item.property.value) {
+                    Spacer(Modifier.height(5.dp))
+                    Text("Persistent override pending next boot", style = MaterialTheme.typography.labelMedium)
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    MiniLabel(item.policy.editability.label)
+                    MiniLabel(item.policy.strategy.label)
+                    if (PropertyCategoryClassifier.isSpoofingProperty(item.property.name)) MiniLabel("Identity")
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun MiniLabel(text: String) {
-    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
-        Text(
-            text,
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun RootStatusCard(state: MainUiState) {
-    val caps = state.capabilities
-    val title = when {
-        state.loading -> "Checking root"
-        !caps.rootAvailable -> "Read-only"
-        caps.resetPropAvailable && caps.modulePersistenceAvailable -> "Runtime + persistent"
-        caps.resetPropAvailable -> "Runtime editing"
-        caps.modulePersistenceAvailable -> "Persistent editing"
-        else -> "Editing unavailable"
-    }
-    val subtitle = when {
-        state.loading -> "Detecting root capabilities…"
-        !caps.rootAvailable -> "No root access detected"
-        else -> caps.framework
-    }
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-    ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Box(
-                Modifier
-                    .size(9.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(if (caps.rootAvailable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
-            )
-            Column {
-                Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
-
-@Composable
-private fun TwoLineMenuGlyph() {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Box(
-            Modifier.width(19.dp).height(2.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.onSurface),
-        )
-        Box(
-            Modifier.width(13.dp).height(2.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.onSurface),
-        )
     }
 }
 
@@ -711,9 +437,7 @@ private fun TwoLineMenuGlyph() {
 @Composable
 private fun PropertyDetailsSheet(
     item: PropertyUiItem,
-    canEdit: Boolean,
-    runtimeAvailable: Boolean,
-    persistentAvailable: Boolean,
+    state: MainUiState,
     onDismiss: () -> Unit,
     onEdit: () -> Unit,
 ) {
@@ -721,113 +445,74 @@ private fun PropertyDetailsSheet(
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp).verticalScroll(rememberScrollState()),
         ) {
-            Text(
-                item.property.name,
-                style = MaterialTheme.typography.titleLarge,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.SemiBold,
-            )
+            Text(item.property.name, style = MaterialTheme.typography.titleLarge, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
-            Text(
-                item.property.value.ifEmpty { "(empty)" },
-                style = MaterialTheme.typography.bodyLarge,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(20.dp))
+            Text(item.property.value.ifEmpty { "(empty)" }, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(18.dp))
+
+            RealityCheckCard(item)
+            Spacer(Modifier.height(18.dp))
             DetailSection("What this property means", item.explanation.propertyMeaning)
             DetailSection("What this value means", item.explanation.valueMeaning)
-
-            if (item.explanation.knownValues.isNotEmpty()) {
-                Text("Known values", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(8.dp))
-                item.explanation.knownValues.forEach { (value, meaning) ->
-                    Surface(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(value, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
-                            Text(meaning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-            }
+            DetailSection("Override reality", item.policy.warning)
 
             HorizontalDivider()
             Spacer(Modifier.height(16.dp))
+            MetadataRow("Editability", item.policy.editability.label)
+            MetadataRow("Apply strategy", item.policy.strategy.label)
+            MetadataRow("Descriptive string", if (item.policy.descriptiveOnly) "Yes — changing the string does not create the represented hardware/security state." else "Not known to be purely descriptive")
             MetadataRow("Origin", item.explanation.origin)
             MetadataRow("Confidence", item.explanation.confidence.label)
             MetadataRow("Risk", item.explanation.risk.label)
             MetadataRow("Likely consumers", item.explanation.consumers)
-            MetadataRow("Editing", item.explanation.editBehaviour)
-            MetadataRow("Reboot behaviour", item.explanation.rebootRequirement)
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(10.dp))
             when {
-                !canEdit -> Text("Root is not available, so this device is currently read-only.", color = MaterialTheme.colorScheme.error)
-                !runtimeAvailable && !persistentAvailable -> Text(
-                    "Root works, but neither resetprop nor a module persistence directory is available.",
-                    color = MaterialTheme.colorScheme.error,
-                )
-                else -> Button(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Edit property") }
+                !item.policy.canOverride -> Text("ROProperties intentionally blocks overriding this property.", color = MaterialTheme.colorScheme.error)
+                !state.capabilities.rootAvailable -> Text("Root is unavailable; inspection only.", color = MaterialTheme.colorScheme.error)
+                !state.capabilities.resetPropAvailable && !state.capabilities.modulePersistenceAvailable -> Text("Root works, but no supported override mechanism is available.", color = MaterialTheme.colorScheme.error)
+                else -> Button(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Override property") }
             }
         }
     }
 }
 
 @Composable
-private fun DetailSection(title: String, text: String) {
-    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-    Spacer(Modifier.height(6.dp))
-    Text(text, style = MaterialTheme.typography.bodyMedium)
-    Spacer(Modifier.height(16.dp))
-}
-
-@Composable
-private fun MetadataRow(label: String, value: String) {
-    Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Text(value, style = MaterialTheme.typography.bodyMedium)
-    Spacer(Modifier.height(12.dp))
-}
-
-@Composable
-private fun EditModeChoice(
-    mode: EditMode,
-    selected: Boolean,
-    enabled: Boolean,
-    onSelected: () -> Unit,
-) {
+private fun RealityCheckCard(item: PropertyUiItem) {
+    val framework = item.frameworkValue
+    val mismatch = framework != null && framework != item.property.value
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerLow,
-        onClick = { if (enabled) onSelected() },
-        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = if (mismatch) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            RadioButton(selected = selected, onClick = { if (enabled) onSelected() }, enabled = enabled)
-            Column(modifier = Modifier.fillMaxWidth().padding(top = 7.dp)) {
+        Column(Modifier.padding(14.dp)) {
+            Text("Effective value check", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            ValueLine("Property service / getprop", item.property.value.ifEmpty { "(empty)" })
+            if (framework != null) {
+                ValueLine("ROProperties framework cache", framework.ifEmpty { "(empty)" })
                 Text(
-                    mode.label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    mode.description,
+                    if (mismatch) "Mismatch: changing getprop has not changed the already-running framework view in this app process." else "The mapped framework value currently agrees with getprop.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (mismatch) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            } else {
+                Text("No direct Android Build.* mapping is available for this property; getprop alone cannot prove the consumer changed behaviour.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            item.persistentOverride?.let {
+                Spacer(Modifier.height(8.dp))
+                ValueLine("Saved next-boot override", it)
             }
         }
     }
+}
+
+@Composable
+private fun ValueLine(label: String, value: String) {
+    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(value, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+    Spacer(Modifier.height(7.dp))
 }
 
 @Composable
@@ -841,79 +526,64 @@ private fun EditPropertyDialog(
 ) {
     var value by rememberSaveable(item.property.name) { mutableStateOf(item.property.value) }
     var mode by rememberSaveable(item.property.name) {
-        mutableStateOf(
-            when {
-                runtimeAvailable && persistentAvailable -> EditMode.BOTH
-                runtimeAvailable -> EditMode.RUNTIME
-                else -> EditMode.PERSISTENT
-            }
-        )
+        mutableStateOf(preferredMode(item, runtimeAvailable, persistentAvailable))
     }
     var acknowledged by rememberSaveable(item.property.name) { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Edit property") },
+        title = { Text("Override property") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    item.property.name,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(item.property.name, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (item.policy.strategy == ApplyStrategy.NEXT_BOOT) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("${item.policy.editability.label} • ${item.policy.strategy.label}", fontWeight = FontWeight.SemiBold)
+                        Text(item.policy.warning, style = MaterialTheme.typography.bodySmall)
+                        if (item.policy.strategy == ApplyStrategy.NEXT_BOOT) {
+                            Spacer(Modifier.height(5.dp))
+                            Text("Persistent + reboot is recommended for this property.", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    "Risk: ${item.explanation.risk.label}. A successful property override can still break apps, framework services or boot-sensitive behaviour.",
-                    color = if (item.explanation.risk >= RiskLevel.HIGH) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = { value = it },
-                    label = { Text("New value") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                )
+                OutlinedTextField(value, { value = it }, label = { Text("New value") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp))
                 Spacer(Modifier.height(14.dp))
-                Text("Apply mode", fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Choose whether this change should happen now, survive reboot, or both.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(6.dp))
+                Text("Apply strategy", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(5.dp))
                 EditMode.entries.forEach { candidate ->
                     val supported = when (candidate) {
                         EditMode.RUNTIME -> runtimeAvailable
                         EditMode.PERSISTENT -> persistentAvailable
                         EditMode.BOTH -> runtimeAvailable && persistentAvailable
                     }
-                    EditModeChoice(
-                        mode = candidate,
-                        selected = mode == candidate,
-                        enabled = supported,
-                        onSelected = { mode = candidate },
-                    )
+                    EditModeChoice(candidate, mode == candidate, supported) { mode = candidate }
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = acknowledged, onCheckedChange = { acknowledged = it })
-                    Text("I understand that changing this ro.* value may destabilise the device.")
+                    Text("I understand that a property string and the real subsystem/hardware state can differ.")
                 }
             }
         },
         confirmButton = {
             Button(onClick = { onApply(value, mode) }, enabled = acknowledged && !applying) {
-                if (applying) {
-                    CircularProgressIndicator(modifier = Modifier.width(18.dp).height(18.dp), strokeWidth = 2.dp)
-                } else {
-                    Text("Apply")
-                }
+                if (applying) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Apply")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !applying) { Text("Cancel") } },
     )
+}
+
+private fun preferredMode(item: PropertyUiItem, runtimeAvailable: Boolean, persistentAvailable: Boolean): EditMode = when {
+    item.policy.strategy == ApplyStrategy.NEXT_BOOT && persistentAvailable -> EditMode.PERSISTENT
+    runtimeAvailable && persistentAvailable -> EditMode.BOTH
+    persistentAvailable -> EditMode.PERSISTENT
+    else -> EditMode.RUNTIME
 }
 
 @Composable
@@ -931,87 +601,78 @@ private fun ImportPropertiesDialog(
     onDismiss: () -> Unit,
     onApply: (List<ImportedPropertyValue>, EditMode) -> Unit,
 ) {
-    var mode by rememberSaveable {
+    val analysis = remember(parsedValues) { ImportProfileAnalyzer.analyze(parsedValues) }
+    var mode by rememberSaveable(parsedValues.size, analysis.nextBootCount) {
         mutableStateOf(
             when {
+                analysis.nextBootCount > 0 && persistentAvailable -> EditMode.PERSISTENT
                 runtimeAvailable && persistentAvailable -> EditMode.BOTH
-                runtimeAvailable -> EditMode.RUNTIME
-                else -> EditMode.PERSISTENT
+                persistentAvailable -> EditMode.PERSISTENT
+                else -> EditMode.RUNTIME
             }
         )
     }
     var acknowledged by rememberSaveable { mutableStateOf(false) }
-    val existingCount = parsedValues.count { it.name in currentPropertyNames }
-    val newCount = parsedValues.size - existingCount
+    val existing = parsedValues.count { it.name in currentPropertyNames }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import properties") },
+        title = { Text("Import property profile") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "Paste property text or choose a TXT file. ROProperties accepts its own exports, ro.name=value lines, and Android [ro.name]: [value] dumps.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
+                Text("Import is treated as a profile, not a blind list of magic switches. ROProperties checks for mixed identity and blocks properties classified as read-only or dangerous.", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onChooseFile) { Text("Choose file") }
                     OutlinedButton(onClick = onPaste) { Text("Paste") }
-                    if (text.isNotEmpty()) {
-                        TextButton(onClick = { onTextChanged("") }) { Text("Clear") }
-                    }
+                    if (text.isNotEmpty()) TextButton(onClick = { onTextChanged("") }) { Text("Clear") }
                 }
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = text,
                     onValueChange = onTextChanged,
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("ro.product.model = SM-G975F\nro.build.type = user") },
-                    minLines = 7,
-                    maxLines = 14,
-                    shape = RoundedCornerShape(16.dp),
+                    minLines = 6,
+                    maxLines = 12,
+                    placeholder = { Text("ro.product.model = SM-S901B") },
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    shape = RoundedCornerShape(16.dp),
                 )
                 Spacer(Modifier.height(10.dp))
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                ) {
+                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Column(Modifier.padding(12.dp)) {
-                        Text("${parsedValues.size} valid ro.* properties found", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "$existingCount already exist on this device${if (newCount > 0) "; $newCount are new names" else ""}.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Text("${parsedValues.size} valid ro.* values", fontWeight = FontWeight.SemiBold)
+                        Text("$existing already exist on this device. ${analysis.nextBootCount} are boot/cache-sensitive. ${analysis.blockedCount} are blocked by policy.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                Spacer(Modifier.height(14.dp))
-                Text("Apply mode", fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
+                analysis.warnings.forEach { warning ->
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (analysis.mixedIdentity) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
+                    ) {
+                        Text(warning, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Apply strategy", fontWeight = FontWeight.SemiBold)
                 EditMode.entries.forEach { candidate ->
                     val supported = when (candidate) {
                         EditMode.RUNTIME -> runtimeAvailable
                         EditMode.PERSISTENT -> persistentAvailable
                         EditMode.BOTH -> runtimeAvailable && persistentAvailable
                     }
-                    EditModeChoice(
-                        mode = candidate,
-                        selected = mode == candidate,
-                        enabled = supported,
-                        onSelected = { mode = candidate },
-                    )
+                    EditModeChoice(candidate, mode == candidate, supported) { mode = candidate }
                 }
                 if (!rootAvailable) {
                     Spacer(Modifier.height(8.dp))
-                    Text("Root access is required to apply imported values.", color = MaterialTheme.colorScheme.error)
+                    Text("Root is required to apply overrides.", color = MaterialTheme.colorScheme.error)
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = acknowledged, onCheckedChange = { acknowledged = it })
-                    Text("I understand this can change many system properties at once.")
+                    Text("I reviewed the profile warnings and understand that strings do not change the underlying hardware or cryptographic state.")
                 }
             }
         },
@@ -1020,10 +681,167 @@ private fun ImportPropertiesDialog(
                 onClick = { onApply(parsedValues, mode) },
                 enabled = parsedValues.isNotEmpty() && rootAvailable && acknowledged && !applying,
             ) {
-                if (applying) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Text("Apply ${parsedValues.size}")
+                if (applying) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Apply ${parsedValues.size}")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !applying) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun EditModeChoice(mode: EditMode, selected: Boolean, enabled: Boolean, onSelected: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerLow,
+        onClick = { if (enabled) onSelected() },
+        enabled = enabled,
+    ) {
+        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.Top) {
+            RadioButton(selected = selected, onClick = { if (enabled) onSelected() }, enabled = enabled)
+            Column(Modifier.padding(top = 6.dp)) {
+                Text(mode.label, fontWeight = FontWeight.SemiBold)
+                Text(mode.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppDrawer(
+    state: MainUiState,
+    onCategory: (PropertyCategory) -> Unit,
+    onConfidence: (KnowledgeConfidence?) -> Unit,
+    onImport: () -> Unit,
+) {
+    ModalDrawerSheet(modifier = Modifier.width(320.dp)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+            Spacer(Modifier.height(20.dp))
+            Text("ROProperties", modifier = Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text("Property inspector + override manager", modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(18.dp))
+            DrawerSection("Properties")
+            PropertyCategory.entries.forEach { category ->
+                DrawerRow(category.label, "${state.countFor(category)}", state.category == category) { onCategory(category) }
+            }
+            Spacer(Modifier.height(14.dp))
+            DrawerSection("Confidence")
+            DrawerRow("Any confidence", null, state.confidenceFilter == null) { onConfidence(null) }
+            KnowledgeConfidence.entries.forEach { confidence ->
+                DrawerRow(confidence.label, null, state.confidenceFilter == confidence) { onConfidence(confidence) }
+            }
+            Spacer(Modifier.height(14.dp))
+            DrawerSection("Tools")
+            DrawerRow("Import property profile", "TXT / paste", false, onImport)
+            Spacer(Modifier.height(14.dp))
+            DrawerSection("Apply modes")
+            EditMode.entries.forEach { mode -> ModeInfoCard(mode) }
+            Spacer(Modifier.height(14.dp))
+            RootStatusCard(state)
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun CategoryIntro(category: PropertyCategory) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(Modifier.padding(14.dp)) {
+            Text(category.label, fontWeight = FontWeight.SemiBold)
+            Text(category.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (category == PropertyCategory.SPOOFING) {
+                Spacer(Modifier.height(6.dp))
+                Text("Identity strings are treated as boot/cache-sensitive. Persistent + reboot is the reliable default; a live getprop change is not considered proof that Android or Play services changed identity.", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RootStatusCard(state: MainUiState) {
+    val caps = state.capabilities
+    val title = when {
+        state.loading -> "Checking root"
+        !caps.rootAvailable -> "Inspection only"
+        caps.resetPropAvailable && caps.modulePersistenceAvailable -> "Live + persistent available"
+        caps.resetPropAvailable -> "Live overrides available"
+        caps.modulePersistenceAvailable -> "Next-boot overrides available"
+        else -> "Override unavailable"
+    }
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(Modifier.padding(12.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(if (caps.rootAvailable) caps.framework else "No root access detected", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun ModeInfoCard(mode: EditMode) {
+    Surface(Modifier.fillMaxWidth().padding(vertical = 3.dp), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(Modifier.padding(10.dp)) {
+            Text(mode.label, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+            Text(mode.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun DrawerSection(text: String) {
+    Text(text, Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun DrawerRow(title: String, subtitle: String?, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(title, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+            subtitle?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
+}
+
+@Composable
+private fun SelectionBottomBar(selectedCount: Int, onExport: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("$selectedCount selected")
+            Button(onClick = onExport, enabled = selectedCount > 0) { Text("Export TXT") }
+        }
+    }
+}
+
+@Composable
+private fun MiniLabel(text: String) {
+    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+        Text(text, Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+private fun DetailSection(title: String, text: String) {
+    Text(title, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(5.dp))
+    Text(text)
+    Spacer(Modifier.height(14.dp))
+}
+
+@Composable
+private fun MetadataRow(label: String, value: String) {
+    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(value)
+    Spacer(Modifier.height(10.dp))
+}
+
+@Composable
+private fun TwoLineMenuGlyph() {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(Modifier.width(19.dp).height(2.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.onSurface))
+        Box(Modifier.width(13.dp).height(2.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.onSurface))
+    }
 }

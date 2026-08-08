@@ -9,6 +9,7 @@ import dev.retrofrost.roproperties.model.EditMode
 import dev.retrofrost.roproperties.model.KnowledgeConfidence
 import dev.retrofrost.roproperties.model.PropertyCategory
 import dev.retrofrost.roproperties.model.PropertyCategoryClassifier
+import dev.retrofrost.roproperties.model.PropertyPolicyClassifier
 import dev.retrofrost.roproperties.model.PropertyUiItem
 import dev.retrofrost.roproperties.model.RootCapabilities
 import kotlinx.coroutines.async
@@ -29,6 +30,8 @@ data class MainUiState(
     val capabilities: RootCapabilities = RootCapabilities(),
     val selectionMode: Boolean = false,
     val selectedNames: Set<String> = emptySet(),
+    val rebootRecommended: Boolean = false,
+    val rebootReason: String? = null,
     val message: String? = null,
 ) {
     val filteredProperties: List<PropertyUiItem>
@@ -37,7 +40,8 @@ data class MainUiState(
                 item.property.name.contains(query, ignoreCase = true) ||
                 item.property.value.contains(query, ignoreCase = true) ||
                 item.explanation.propertyMeaning.contains(query, ignoreCase = true) ||
-                item.explanation.valueMeaning.contains(query, ignoreCase = true)
+                item.explanation.valueMeaning.contains(query, ignoreCase = true) ||
+                item.policy.editability.label.contains(query, ignoreCase = true)
             val confidenceMatches = confidenceFilter == null || item.explanation.confidence == confidenceFilter
             val categoryMatches = PropertyCategoryClassifier.matches(category, item)
             queryMatches && confidenceMatches && categoryMatches
@@ -59,21 +63,26 @@ class MainViewModel(
     private val _state = MutableStateFlow(MainUiState())
     val state: StateFlow<MainUiState> = _state.asStateFlow()
 
-    init {
-        refresh()
-    }
+    init { refresh() }
 
     fun refresh() {
         viewModelScope.launch {
             _state.update { it.copy(loading = true) }
-            val (properties, capabilities) = coroutineScope {
+            val (properties, capabilities, persistent) = coroutineScope {
                 val propertiesDeferred = async { repository.loadProperties() }
                 val capabilitiesDeferred = async { repository.detectCapabilities() }
-                propertiesDeferred.await() to capabilitiesDeferred.await()
+                val persistentDeferred = async { repository.loadPersistentOverrides() }
+                Triple(propertiesDeferred.await(), capabilitiesDeferred.await(), persistentDeferred.await())
             }
             _state.update { current ->
                 val items = properties.map { property ->
-                    PropertyUiItem(property, PropertyKnowledgeEngine.explain(property))
+                    PropertyUiItem(
+                        property = property,
+                        explanation = PropertyKnowledgeEngine.explain(property),
+                        policy = PropertyPolicyClassifier.policyFor(property.name),
+                        frameworkValue = repository.frameworkCachedValue(property.name),
+                        persistentOverride = persistent[property.name],
+                    )
                 }
                 val availableNames = items.mapTo(mutableSetOf()) { it.property.name }
                 current.copy(
@@ -87,18 +96,10 @@ class MainViewModel(
     }
 
     fun setQuery(query: String) = _state.update { it.copy(query = query) }
-
-    fun setCategory(category: PropertyCategory) =
-        _state.update { it.copy(category = category, query = "") }
-
-    fun setConfidenceFilter(filter: KnowledgeConfidence?) =
-        _state.update { it.copy(confidenceFilter = filter) }
-
+    fun setCategory(category: PropertyCategory) = _state.update { it.copy(category = category, query = "") }
+    fun setConfidenceFilter(filter: KnowledgeConfidence?) = _state.update { it.copy(confidenceFilter = filter) }
     fun beginSelection() = _state.update { it.copy(selectionMode = true) }
-
-    fun cancelSelection() = _state.update {
-        it.copy(selectionMode = false, selectedNames = emptySet())
-    }
+    fun cancelSelection() = _state.update { it.copy(selectionMode = false, selectedNames = emptySet()) }
 
     fun toggleSelection(name: String) = _state.update { current ->
         val selected = current.selectedNames.toMutableSet()
@@ -114,14 +115,21 @@ class MainViewModel(
     }
 
     fun clearMessage() = _state.update { it.copy(message = null) }
-
     fun showMessage(message: String) = _state.update { it.copy(message = message) }
+    fun clearRebootRecommendation() = _state.update { it.copy(rebootRecommended = false, rebootReason = null) }
 
     fun apply(item: PropertyUiItem, value: String, mode: EditMode) {
         viewModelScope.launch {
             _state.update { it.copy(applying = true, message = null) }
             val result = repository.apply(item.property.name, value, mode)
-            _state.update { it.copy(applying = false, message = result.message) }
+            _state.update {
+                it.copy(
+                    applying = false,
+                    message = result.message,
+                    rebootRecommended = it.rebootRecommended || result.rebootRecommended,
+                    rebootReason = if (result.rebootRecommended) "${item.property.name} is boot/cache-sensitive." else it.rebootReason,
+                )
+            }
             if (result.success || result.runtimeApplied) refresh()
         }
     }
@@ -137,16 +145,34 @@ class MainViewModel(
             val results = repository.applyBatch(values, mode)
             val successful = results.count { it.success }
             val failed = results.size - successful
+            val blocked = results.count { !it.success && (it.message.startsWith("Read-only") || it.message.startsWith("Dangerous")) }
             val changedAtRuntime = results.any { it.runtimeApplied }
+            val needsReboot = results.any { it.rebootRecommended }
 
-            val summary = when {
-                failed == 0 -> "Imported $successful properties using ${mode.label}."
-                successful == 0 -> "Import failed for all $failed properties."
-                else -> "Imported $successful properties; $failed failed."
+            val summary = buildString {
+                append("Imported $successful of ${results.size} properties using ${mode.label}.")
+                if (failed > 0) append(" $failed failed")
+                if (blocked > 0) append(" ($blocked intentionally blocked)")
+                if (needsReboot) append(". Reboot recommended for reliable boot/cached identity changes")
+                append('.')
             }
 
-            _state.update { it.copy(applying = false, message = summary) }
+            _state.update {
+                it.copy(
+                    applying = false,
+                    message = summary,
+                    rebootRecommended = it.rebootRecommended || needsReboot,
+                    rebootReason = if (needsReboot) "Imported profile contains boot/cache-sensitive properties." else it.rebootReason,
+                )
+            }
             if (successful > 0 || changedAtRuntime) refresh()
+        }
+    }
+
+    fun rebootDevice() {
+        viewModelScope.launch {
+            val result = repository.reboot()
+            if (!result.success) _state.update { it.copy(message = result.message) }
         }
     }
 }
