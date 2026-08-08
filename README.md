@@ -16,8 +16,40 @@ Unlike property viewers that only recognise a small hard-coded list, ROPropertie
 - Runtime editing through root `resetprop` when supported.
 - Persistent editing through a Magisk-compatible `system.prop` module in `/data/adb/modules/roproperties`.
 - Runtime + persistent mode.
+- In-app explanations for Runtime, Persistent, and Runtime + persistent modes.
+- Multi-select properties, including **Select all** for the current category/search result.
+- Export selected property names and values to a human-readable, styled TXT file.
+- Import values back from a TXT file or pasted clipboard/text content and apply them in bulk.
 - Explicit warnings for compatibility/security/boot-sensitive properties.
 - Neutral Material 3 light and dark themes.
+
+## Import and export
+
+Enter selection mode from the property list, choose individual properties or use **Select all**, then export them to TXT. The exported document includes a readable heading and numbered property blocks, while each block also contains a plain round-trip line such as:
+
+```text
+ro.product.model = SM-G975F
+```
+
+That makes the file pleasant to read while still being easy to edit and import again.
+
+The importer accepts three forms:
+
+```text
+ro.product.model = SM-G975F
+ro.product.model=SM-G975F
+[ro.product.model]: [SM-G975F]
+```
+
+It can read a selected text file or pasted text from the clipboard. Before applying anything, ROProperties shows how many valid `ro.*` entries were found and lets the user choose Runtime, Persistent, or Runtime + persistent for the whole import. Duplicate property names use the last supplied value.
+
+## Editing modes
+
+- **Runtime** — applies the value immediately using `resetprop`. It normally lasts only until the next reboot, and components that already cached the old property may not notice it.
+- **Persistent** — saves the value in ROProperties' root module so it is applied again on future boots. The currently running property may remain unchanged until reboot.
+- **Runtime + persistent** — applies the value immediately and saves it for future boots.
+
+These explanations are also shown directly in the app wherever an edit mode is selected.
 
 ## Spoofing properties
 
