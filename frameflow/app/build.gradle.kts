@@ -12,8 +12,8 @@ android {
         applicationId = "com.frameflow.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.0-beta2"
+        versionCode = 5
+        versionName = "1.0.0-beta3"
     }
 
     buildFeatures { compose = true }
