@@ -3,11 +3,7 @@ package com.frameflow.app
 import androidx.compose.runtime.Composable
 
 /**
- * Stable entry point for the Frameflow editor.
- *
- * Release-hardening note: all visible editor functionality is routed through
- * FullEditorScreen. Experimental/future UI must not be exposed here until its
- * actions are backed by real project operations and covered by CI/runtime tests.
+ * Shipping editor entry point. Only release-backed tools are exposed here.
  */
 @Composable
 fun FinalEditorScreen(
@@ -23,7 +19,7 @@ fun FinalEditorScreen(
     onExportGif: () -> Unit,
     onExportMp4: () -> Unit
 ) {
-    FullEditorScreen(
+    ReleaseEditorScreen(
         project = project,
         repository = repository,
         onBack = onBack,
