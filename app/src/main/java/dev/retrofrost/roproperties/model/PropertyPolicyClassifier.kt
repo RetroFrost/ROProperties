@@ -19,7 +19,9 @@ object PropertyPolicyClassifier {
         "ro.control_privapp_permissions",
         "ro.vndk.version",
         "ro.vendor.api_level",
+        "ro.product.first_api_level",
         "ro.board.first_api_level",
+        "ro.build.version.sdk",
         "ro.debuggable",
         "ro.secure",
         "ro.adb.secure",
@@ -46,7 +48,7 @@ object PropertyPolicyClassifier {
                 canOverride = false,
                 cachedSensitive = true,
                 descriptiveOnly = false,
-                warning = "This property describes or controls core security, runtime architecture, encryption, partitioning or compatibility behaviour. ROProperties intentionally does not override it.",
+                warning = "This property describes or controls core security, runtime architecture, API compatibility, encryption, partitioning or vendor compatibility behaviour. ROProperties intentionally does not override it.",
             )
         }
 

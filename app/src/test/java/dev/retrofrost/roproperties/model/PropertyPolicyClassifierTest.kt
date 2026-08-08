@@ -32,6 +32,12 @@ class PropertyPolicyClassifierTest {
     }
 
     @Test
+    fun apiCompatibilityMetadataIsNotTreatedAsHarmlessSpoofing() {
+        assertFalse(PropertyPolicyClassifier.policyFor("ro.product.first_api_level").canOverride)
+        assertFalse(PropertyPolicyClassifier.policyFor("ro.build.version.sdk").canOverride)
+    }
+
+    @Test
     fun vendorPropertiesDefaultToBootTime() {
         val policy = PropertyPolicyClassifier.policyFor("ro.vendor.some.feature")
         assertEquals(PropertyEditability.BOOT_TIME, policy.editability)

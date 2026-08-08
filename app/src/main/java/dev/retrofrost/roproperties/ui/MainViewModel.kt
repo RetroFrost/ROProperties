@@ -53,8 +53,7 @@ data class MainUiState(
     val allFilteredSelected: Boolean
         get() = filteredProperties.isNotEmpty() && filteredProperties.all { it.property.name in selectedNames }
 
-    fun countFor(category: PropertyCategory): Int =
-        properties.count { PropertyCategoryClassifier.matches(category, it) }
+    fun countFor(category: PropertyCategory): Int = properties.count { PropertyCategoryClassifier.matches(category, it) }
 }
 
 class MainViewModel(
@@ -68,11 +67,16 @@ class MainViewModel(
     fun refresh() {
         viewModelScope.launch {
             _state.update { it.copy(loading = true) }
-            val (properties, capabilities, persistent) = coroutineScope {
+            val (properties, capabilities) = coroutineScope {
                 val propertiesDeferred = async { repository.loadProperties() }
                 val capabilitiesDeferred = async { repository.detectCapabilities() }
-                val persistentDeferred = async { repository.loadPersistentOverrides() }
-                Triple(propertiesDeferred.await(), capabilitiesDeferred.await(), persistentDeferred.await())
+                propertiesDeferred.await() to capabilitiesDeferred.await()
+            }
+            // Avoid launching a second su request in parallel with capability detection.
+            val persistent = if (capabilities.rootAvailable && capabilities.modulePersistenceAvailable) {
+                repository.loadPersistentOverrides()
+            } else {
+                emptyMap()
             }
             _state.update { current ->
                 val items = properties.map { property ->
@@ -139,7 +143,6 @@ class MainViewModel(
             showMessage("No valid ro.* property values were found to import.")
             return
         }
-
         viewModelScope.launch {
             _state.update { it.copy(applying = true, message = null) }
             val results = repository.applyBatch(values, mode)
@@ -148,7 +151,6 @@ class MainViewModel(
             val blocked = results.count { !it.success && (it.message.startsWith("Read-only") || it.message.startsWith("Dangerous")) }
             val changedAtRuntime = results.any { it.runtimeApplied }
             val needsReboot = results.any { it.rebootRecommended }
-
             val summary = buildString {
                 append("Imported $successful of ${results.size} properties using ${mode.label}.")
                 if (failed > 0) append(" $failed failed")
@@ -156,7 +158,6 @@ class MainViewModel(
                 if (needsReboot) append(". Reboot recommended for reliable boot/cached identity changes")
                 append('.')
             }
-
             _state.update {
                 it.copy(
                     applying = false,
