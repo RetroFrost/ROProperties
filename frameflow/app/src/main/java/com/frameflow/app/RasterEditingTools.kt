@@ -7,23 +7,28 @@ import java.io.ByteArrayOutputStream
 import java.util.BitSet
 import kotlin.math.abs
 
+private const val PICK_PREVIEW_SIDE = 1400
+private const val FILL_WORKING_SIDE = 1024
+private const val MAX_FILL_PIXELS = 1_100_000
+
 object RasterEditingTools {
     fun sampleVisibleColor(project: ProjectState, frameIndex: Int, point: CanvasPoint): Int? {
+        if (project.frames.isEmpty()) return null
         if (point.x !in 0f..<project.canvasWidth.toFloat() || point.y !in 0f..<project.canvasHeight.toFloat()) return null
-        val bitmap = FrameRenderer.render(project, frameIndex.coerceIn(project.frames.indices))
+        val bitmap = FrameRenderer.renderPreview(project, frameIndex.coerceIn(project.frames.indices), PICK_PREVIEW_SIDE)
         return try {
-            bitmap.getPixel(
-                point.x.toInt().coerceIn(0, bitmap.width - 1),
-                point.y.toInt().coerceIn(0, bitmap.height - 1)
-            )
+            val px = projectToBitmapX(point.x, project.canvasWidth, bitmap.width)
+            val py = projectToBitmapY(point.y, project.canvasHeight, bitmap.height)
+            bitmap.getPixel(px, py)
         } finally {
-            bitmap.recycle()
+            if (!bitmap.isRecycled) bitmap.recycle()
         }
     }
 
     /**
-     * Flood-fills what the user can currently see and places the result on its own
-     * transparent raster layer. Existing artwork stays editable and untouched.
+     * Flood-fills a bounded working render and places the result on its own
+     * transparent raster layer. The layer is scaled back to project coordinates,
+     * so large canvases never require several full-resolution arrays for one tap.
      */
     fun floodFillVisible(
         project: ProjectState,
@@ -32,35 +37,48 @@ object RasterEditingTools {
         fillArgb: Int,
         tolerance: Float = .08f
     ): Int {
-        val frame = project.frames[frameIndex.coerceIn(project.frames.indices)]
-        val sourceBitmap = FrameRenderer.render(project, frameIndex)
+        require(project.frames.isNotEmpty()) { "Project has no frames" }
+        require(point.x.isFinite() && point.y.isFinite()) { "Invalid fill point" }
+        if (point.x !in 0f..<project.canvasWidth.toFloat() || point.y !in 0f..<project.canvasHeight.toFloat()) return 0
+
+        val safeFrameIndex = frameIndex.coerceIn(project.frames.indices)
+        val frame = project.frames[safeFrameIndex]
+        val sourceBitmap = FrameRenderer.renderPreview(project, safeFrameIndex, FILL_WORKING_SIDE)
         val width = sourceBitmap.width
         val height = sourceBitmap.height
-        val sx = point.x.toInt().coerceIn(0, width - 1)
-        val sy = point.y.toInt().coerceIn(0, height - 1)
-        val total = width * height
+        val totalLong = width.toLong() * height.toLong()
+        require(totalLong in 1..MAX_FILL_PIXELS.toLong()) { "Fill working image is too large" }
+        val total = totalLong.toInt()
+        val sx = projectToBitmapX(point.x, project.canvasWidth, width)
+        val sy = projectToBitmapY(point.y, project.canvasHeight, height)
+
         val source = IntArray(total)
-        sourceBitmap.getPixels(source, 0, width, 0, 0, width, height)
-        sourceBitmap.recycle()
+        try {
+            sourceBitmap.getPixels(source, 0, width, 0, 0, width, height)
+        } finally {
+            if (!sourceBitmap.isRecycled) sourceBitmap.recycle()
+        }
+
         val target = source[sy * width + sx]
+        val safeTolerance = tolerance.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: .08f
         if (distance(target, fillArgb) <= .005f) return 0
 
         val output = IntArray(total)
         val visited = BitSet(total)
-        var stack = IntArray(4096)
+        // A bounded stack avoids repeated array growth and cannot exceed the working image.
+        val stack = IntArray(total)
         var stackSize = 0
         fun push(index: Int) {
-            if (stackSize == stack.size) stack = stack.copyOf(stack.size * 2)
-            stack[stackSize++] = index
+            if (index in 0 until total && stackSize < stack.size) stack[stackSize++] = index
         }
         push(sy * width + sx)
         var changed = 0
 
-        fun matches(index: Int): Boolean = !visited[index] && distance(source[index], target) <= tolerance
+        fun matches(index: Int): Boolean = index in 0 until total && !visited[index] && distance(source[index], target) <= safeTolerance
 
         while (stackSize > 0) {
             val seed = stack[--stackSize]
-            if (seed !in 0 until total || !matches(seed)) continue
+            if (!matches(seed)) continue
             val y = seed / width
             var x = seed % width
             while (x > 0 && matches(y * width + x - 1)) x--
@@ -94,16 +112,27 @@ object RasterEditingTools {
 
         if (changed == 0) return 0
         val mask = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        mask.setPixels(output, 0, width, 0, 0, width, height)
-        val encoded = encode(mask)
-        mask.recycle()
+        val encoded = try {
+            mask.setPixels(output, 0, width, 0, 0, width, height)
+            encode(mask)
+        } finally {
+            if (!mask.isRecycled) mask.recycle()
+        }
+
+        // FrameRenderer intentionally does not upscale raster assets by default.
+        // Scaling the layer around canvas centre maps this bounded mask 1:1 back
+        // onto the full project coordinate system.
+        val scaleX = project.canvasWidth.toFloat() / width.toFloat()
+        val scaleY = project.canvasHeight.toFloat() / height.toFloat()
         frame.layers.add(
             0,
             LayerState(
                 name = "Fill",
                 part = Part.None,
                 rasterPngBase64 = encoded,
-                rasterName = "Fill"
+                rasterName = "Fill",
+                scaleX = scaleX.coerceIn(.01f, 20f),
+                scaleY = scaleY.coerceIn(.01f, 20f)
             )
         )
         project.touch()
@@ -153,6 +182,12 @@ object RasterEditingTools {
         }
     }
 
+    private fun projectToBitmapX(x: Float, projectWidth: Int, bitmapWidth: Int): Int =
+        ((x / projectWidth.coerceAtLeast(1)) * bitmapWidth).toInt().coerceIn(0, bitmapWidth - 1)
+
+    private fun projectToBitmapY(y: Float, projectHeight: Int, bitmapHeight: Int): Int =
+        ((y / projectHeight.coerceAtLeast(1)) * bitmapHeight).toInt().coerceIn(0, bitmapHeight - 1)
+
     private fun pointInPolygon(point: CanvasPoint, polygon: List<CanvasPoint>): Boolean {
         var inside = false
         var j = polygon.lastIndex
@@ -180,6 +215,7 @@ object RasterEditingTools {
             check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
             output.toByteArray()
         }
+        require(bytes.size <= 64 * 1024 * 1024) { "Fill layer is too large" }
         return Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 }
