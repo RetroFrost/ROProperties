@@ -6,7 +6,9 @@ import android.graphics.Color
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 object SelectionTools {
     fun selectPartAt(editor: EditorState, visiblePoint: CanvasPoint) {
@@ -29,7 +31,7 @@ object SelectionTools {
                 }
                 return
             }
-            val hitStroke = layer.strokes.asReversed().firstOrNull { hitStroke(it, localPoint) }
+            val hitStroke = layer.strokes.asReversed().firstOrNull { hitStrokeLocal(it, localPoint) }
             if (hitStroke != null) {
                 editor.selectedRasterLayerIndex = -1
                 editor.selectedIds.clear()
@@ -53,22 +55,24 @@ object SelectionTools {
             val localPoint = inverseLayer(editor.project, layer, scenePoint)
             if (layer.hasRaster) {
                 val bitmap = decode(layer.rasterPngBase64) ?: continue
-                val pixel = rasterPixel(editor.project, bitmap, localPoint)
-                if (pixel != null && Color.alpha(pixel) > 12) {
-                    bitmap.recycle()
-                    editor.selectedRasterLayerIndex = index
-                    editor.layerIndex = index
-                    editor.selectedIds.clear()
-                    return
+                try {
+                    val pixel = rasterPixel(editor.project, bitmap, localPoint)
+                    if (pixel != null && Color.alpha(pixel) > 12) {
+                        editor.selectedRasterLayerIndex = index
+                        editor.layerIndex = index
+                        editor.selectedIds.clear()
+                        return
+                    }
+                } finally {
+                    if (!bitmap.isRecycled) bitmap.recycle()
                 }
-                bitmap.recycle()
             }
-            val hit = layer.strokes.asReversed().firstOrNull { !it.erase && hitStroke(it, localPoint) }
+            val hit = layer.strokes.asReversed().firstOrNull { !it.erase && hitStrokeLocal(it, localPoint) }
             if (hit != null) {
                 editor.selectedRasterLayerIndex = -1
                 editor.selectedIds.clear()
                 frame.layers.flatMap { it.strokes }
-                    .filter { !it.erase && colorDistance(it.colorArgb, hit.colorArgb) < tolerance }
+                    .filter { !it.erase && colorDistanceLocal(it.colorArgb, hit.colorArgb) < tolerance.coerceIn(0f, 1f) }
                     .forEach { editor.selectedIds.add(it.id) }
                 return
             }
@@ -88,24 +92,28 @@ object SelectionTools {
         val scenePoint = inverseCamera(project, frame, visiblePoint)
         val localPoint = inverseLayer(project, layer, scenePoint)
         val bitmap = decode(layer.rasterPngBase64) ?: return 0
-        val target = rasterPixel(project, bitmap, localPoint) ?: run { bitmap.recycle(); return 0 }
-        val pixels = IntArray(bitmap.width * bitmap.height)
-        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        var changed = 0
-        for (i in pixels.indices) {
-            val pixel = pixels[i]
-            if (Color.alpha(pixel) > 0 && colorDistance(pixel, target) <= tolerance) {
-                pixels[i] = if (erase) Color.TRANSPARENT else newArgb
-                changed++
+        return try {
+            val target = rasterPixel(project, bitmap, localPoint) ?: return 0
+            val pixels = IntArray(bitmap.width * bitmap.height)
+            bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            var changed = 0
+            val safeTolerance = tolerance.coerceIn(0f, 1f)
+            for (i in pixels.indices) {
+                val pixel = pixels[i]
+                if (Color.alpha(pixel) > 0 && colorDistanceLocal(pixel, target) <= safeTolerance) {
+                    pixels[i] = if (erase) Color.TRANSPARENT else newArgb
+                    changed++
+                }
             }
+            if (changed > 0) {
+                bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                layer.rasterPngBase64 = encode(bitmap)
+                project.touch()
+            }
+            changed
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
         }
-        if (changed > 0) {
-            bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-            layer.rasterPngBase64 = encode(bitmap)
-            project.touch()
-        }
-        bitmap.recycle()
-        return changed
     }
 
     fun inverseCamera(project: ProjectState, frame: FrameState, point: CanvasPoint): CanvasPoint {
@@ -118,8 +126,9 @@ object SelectionTools {
         val s = sin(radians).toFloat()
         val rx = x * c - y * s
         val ry = x * s + y * c
-        x = rx / frame.cameraZoom
-        y = ry / frame.cameraZoom
+        val zoom = frame.cameraZoom.takeIf { it.isFinite() && kotlin.math.abs(it) >= .0001f } ?: 1f
+        x = rx / zoom
+        y = ry / zoom
         return CanvasPoint(x + cx, y + cy)
     }
 
@@ -133,20 +142,24 @@ object SelectionTools {
         val s = sin(radians).toFloat()
         val rx = x * c - y * s
         val ry = x * s + y * c
-        x = if (layer.scaleX == 0f) rx else rx / layer.scaleX
-        y = if (layer.scaleY == 0f) ry else ry / layer.scaleY
-        return CanvasPoint(x + cx, y + cy)
+        val sx = layer.scaleX.takeIf { it.isFinite() && kotlin.math.abs(it) >= .0001f } ?: 1f
+        val sy = layer.scaleY.takeIf { it.isFinite() && kotlin.math.abs(it) >= .0001f } ?: 1f
+        return CanvasPoint(rx / sx + cx, ry / sy + cy)
     }
 
     private fun rasterAlphaAt(project: ProjectState, layer: LayerState, point: CanvasPoint): Int {
         val bitmap = decode(layer.rasterPngBase64) ?: return 0
-        val pixel = rasterPixel(project, bitmap, point)
-        bitmap.recycle()
-        return pixel?.let(Color::alpha) ?: 0
+        return try {
+            rasterPixel(project, bitmap, point)?.let(Color::alpha) ?: 0
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
     }
 
     private fun rasterPixel(project: ProjectState, bitmap: Bitmap, point: CanvasPoint): Int? {
+        if (bitmap.width <= 0 || bitmap.height <= 0) return null
         val scale = minOf(project.canvasWidth.toFloat() / bitmap.width, project.canvasHeight.toFloat() / bitmap.height, 1f)
+        if (!scale.isFinite() || scale <= 0f) return null
         val drawWidth = bitmap.width * scale
         val drawHeight = bitmap.height * scale
         val left = (project.canvasWidth - drawWidth) / 2f
@@ -157,15 +170,35 @@ object SelectionTools {
         return bitmap.getPixel(x, y)
     }
 
+    private fun hitStrokeLocal(stroke: StrokeData, point: CanvasPoint): Boolean {
+        if (stroke.points.isEmpty()) return false
+        val threshold = stroke.width.takeIf { it.isFinite() }?.coerceAtLeast(1f)?.div(2f)?.plus(18f) ?: 18f
+        return stroke.points.any { p ->
+            p.x.isFinite() && p.y.isFinite() && point.x.isFinite() && point.y.isFinite() &&
+                hypot((p.x - point.x).toDouble(), (p.y - point.y).toDouble()) <= threshold
+        }
+    }
+
+    private fun colorDistanceLocal(a: Int, b: Int): Float {
+        val ar = (a shr 16 and 0xFF) / 255f
+        val ag = (a shr 8 and 0xFF) / 255f
+        val ab = (a and 0xFF) / 255f
+        val br = (b shr 16 and 0xFF) / 255f
+        val bg = (b shr 8 and 0xFF) / 255f
+        val bb = (b and 0xFF) / 255f
+        return sqrt((ar - br) * (ar - br) + (ag - bg) * (ag - bg) + (ab - bb) * (ab - bb))
+    }
+
     private fun decode(base64: String?): Bitmap? {
         if (base64.isNullOrBlank()) return null
         val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull() ?: return null
-        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        if (bytes.size > 64 * 1024 * 1024) return null
+        return runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
     }
 
     private fun encode(bitmap: Bitmap): String {
         val bytes = ByteArrayOutputStream().use { output ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
             output.toByteArray()
         }
         return Base64.encodeToString(bytes, Base64.NO_WRAP)
