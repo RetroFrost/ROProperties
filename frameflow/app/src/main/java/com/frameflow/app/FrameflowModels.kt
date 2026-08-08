@@ -13,7 +13,7 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
 
-const val FRAMEFLOW_FORMAT_VERSION = 3
+const val FRAMEFLOW_FORMAT_VERSION = 4
 
 enum class Tool { Brush, Eraser, SmartSelect, ColorRepeat }
 
@@ -27,6 +27,9 @@ enum class Part(val label: String) {
     None("None"),
     Body("Body"),
     Face("Face"),
+    Eyes("Eyes"),
+    Mouth("Mouth"),
+    Eyebrows("Eyebrows"),
     LeftArm("Left arm"),
     RightArm("Right arm"),
     LeftLeg("Left leg"),
@@ -66,7 +69,10 @@ class LayerState(
     scaleY: Float = 1f,
     rotationDeg: Float = 0f,
     rasterPngBase64: String? = null,
-    rasterName: String? = null
+    rasterName: String? = null,
+    folderName: String? = null,
+    clipToBelow: Boolean = false,
+    isRigSource: Boolean = false
 ) {
     var name by mutableStateOf(name)
     var part by mutableStateOf(part)
@@ -80,6 +86,9 @@ class LayerState(
     var rotationDeg by mutableFloatStateOf(rotationDeg.finiteOr(0f))
     var rasterPngBase64 by mutableStateOf(rasterPngBase64)
     var rasterName by mutableStateOf(rasterName)
+    var folderName by mutableStateOf(folderName?.trim()?.take(64)?.takeIf { it.isNotBlank() })
+    var clipToBelow by mutableStateOf(clipToBelow)
+    var isRigSource by mutableStateOf(isRigSource)
     val strokes = mutableStateListOf<StrokeData>().apply { addAll(strokes) }
 
     val hasRaster: Boolean get() = !rasterPngBase64.isNullOrBlank()
@@ -97,7 +106,10 @@ class LayerState(
         scaleY = scaleY,
         rotationDeg = rotationDeg,
         rasterPngBase64 = rasterPngBase64,
-        rasterName = rasterName
+        rasterName = rasterName,
+        folderName = folderName,
+        clipToBelow = clipToBelow,
+        isRigSource = isRigSource
     )
 }
 
@@ -197,13 +209,13 @@ data class ProjectMeta(
 )
 
 fun defaultLayers() = listOf(
-    LayerState("Body", Part.Body),
-    LayerState("Face", Part.Face),
-    LayerState("Left arm", Part.LeftArm),
-    LayerState("Right arm", Part.RightArm),
-    LayerState("Left leg", Part.LeftLeg),
-    LayerState("Right leg", Part.RightLeg),
-    LayerState("Background", Part.Background)
+    LayerState("Body", Part.Body, folderName = "Character"),
+    LayerState("Face", Part.Face, folderName = "Character"),
+    LayerState("Left arm", Part.LeftArm, folderName = "Character"),
+    LayerState("Right arm", Part.RightArm, folderName = "Character"),
+    LayerState("Left leg", Part.LeftLeg, folderName = "Character"),
+    LayerState("Right leg", Part.RightLeg, folderName = "Character"),
+    LayerState("Background", Part.Background, folderName = "Scene")
 )
 
 val brushFamilies = listOf(
@@ -289,7 +301,17 @@ class EditorState(val project: ProjectState) {
     fun addBlankFrame() {
         ensureIndices()
         val current = project.frames[frameIndexState]
-        val layers = current.layers.map { LayerState(it.name, it.part, visible = it.visible, locked = it.locked) }
+        val layers = current.layers.map {
+            LayerState(
+                it.name,
+                it.part,
+                visible = it.visible,
+                locked = it.locked,
+                folderName = it.folderName,
+                clipToBelow = it.clipToBelow,
+                isRigSource = it.isRigSource
+            )
+        }
         project.frames.add(frameIndexState + 1, FrameState(current.durationMs, layers))
         frameIndex = frameIndexState + 1
         layerIndex = layerIndex.coerceIn(project.frames[frameIndexState].layers.indices)
@@ -362,6 +384,9 @@ class EditorState(val project: ProjectState) {
             current.layers[0].rasterPngBase64 = null
             current.layers[0].name = "Layer 1"
             current.layers[0].part = Part.None
+            current.layers[0].folderName = null
+            current.layers[0].clipToBelow = false
+            current.layers[0].isRigSource = false
         } else {
             current.layers.removeAt(layerIndex)
             layerIndex = layerIndex.coerceAtMost(current.layers.lastIndex)
