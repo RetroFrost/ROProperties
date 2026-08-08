@@ -1,5 +1,6 @@
 package dev.retrofrost.roproperties.data
 
+import dev.retrofrost.roproperties.io.ImportedPropertyValue
 import dev.retrofrost.roproperties.model.AndroidProperty
 import dev.retrofrost.roproperties.model.EditMode
 import dev.retrofrost.roproperties.model.EditResult
@@ -46,10 +47,25 @@ class PropertyRepository(
     }
 
     suspend fun apply(name: String, value: String, mode: EditMode): EditResult {
+        return applyWithCapabilities(name, value, mode, detectCapabilities())
+    }
+
+    suspend fun applyBatch(values: List<ImportedPropertyValue>, mode: EditMode): List<EditResult> {
+        val capabilities = detectCapabilities()
+        return values.map { value ->
+            applyWithCapabilities(value.name, value.value, mode, capabilities)
+        }
+    }
+
+    private suspend fun applyWithCapabilities(
+        name: String,
+        value: String,
+        mode: EditMode,
+        caps: RootCapabilities,
+    ): EditResult {
         val validation = validate(name, value)
         if (validation != null) return EditResult(false, validation)
 
-        val caps = detectCapabilities()
         if (!caps.rootAvailable) {
             return EditResult(false, "Root access was not granted.")
         }
