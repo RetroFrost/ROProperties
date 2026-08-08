@@ -1,11 +1,13 @@
 package com.frameflow.app
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.util.Base64
 
 object FrameRenderer {
     fun render(project: ProjectState, frameIndex: Int): Bitmap {
@@ -13,15 +15,52 @@ object FrameRenderer {
         val canvas = Canvas(bitmap)
         canvas.drawColor(project.backgroundArgb)
         val frame = project.frames[frameIndex.coerceIn(project.frames.indices)]
+        val cx = project.canvasWidth / 2f
+        val cy = project.canvasHeight / 2f
+
+        canvas.save()
+        canvas.translate(cx + frame.cameraX, cy + frame.cameraY)
+        canvas.rotate(frame.cameraRotation)
+        canvas.scale(frame.cameraZoom, frame.cameraZoom)
+        canvas.translate(-cx, -cy)
+
         frame.layers.asReversed().forEach { layer ->
             if (!layer.visible) return@forEach
             val layerBitmap = Bitmap.createBitmap(project.canvasWidth, project.canvasHeight, Bitmap.Config.ARGB_8888)
             val layerCanvas = Canvas(layerBitmap)
+            drawRaster(layerCanvas, layer, project.canvasWidth, project.canvasHeight)
             layer.strokes.forEach { drawStroke(layerCanvas, it) }
-            canvas.drawBitmap(layerBitmap, 0f, 0f, null)
+
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                alpha = (layer.opacity.coerceIn(0f, 1f) * 255f).toInt()
+            }
+            canvas.save()
+            canvas.translate(cx + layer.offsetX, cy + layer.offsetY)
+            canvas.rotate(layer.rotationDeg)
+            canvas.scale(layer.scaleX, layer.scaleY)
+            canvas.translate(-cx, -cy)
+            canvas.drawBitmap(layerBitmap, 0f, 0f, paint)
+            canvas.restore()
             layerBitmap.recycle()
         }
+        canvas.restore()
         return bitmap
+    }
+
+    private fun drawRaster(canvas: Canvas, layer: LayerState, canvasWidth: Int, canvasHeight: Int) {
+        val encoded = layer.rasterPngBase64 ?: return
+        val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: return
+        val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
+        val maxWidth = canvasWidth.toFloat()
+        val maxHeight = canvasHeight.toFloat()
+        val scale = minOf(maxWidth / source.width, maxHeight / source.height, 1f)
+        val drawWidth = source.width * scale
+        val drawHeight = source.height * scale
+        val left = (canvasWidth - drawWidth) / 2f
+        val top = (canvasHeight - drawHeight) / 2f
+        val destination = android.graphics.RectF(left, top, left + drawWidth, top + drawHeight)
+        canvas.drawBitmap(source, null, destination, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+        source.recycle()
     }
 
     private fun drawStroke(canvas: Canvas, stroke: StrokeData) {
