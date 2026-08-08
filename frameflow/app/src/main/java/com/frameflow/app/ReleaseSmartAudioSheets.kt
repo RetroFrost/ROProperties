@@ -138,11 +138,11 @@ fun ReleaseAudioSheet(
 
 @Composable
 private fun WaveformView(values: FloatArray) {
+    val colour = MaterialTheme.colorScheme.primary
     Canvas(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 7.dp)) {
         if (values.isEmpty()) return@Canvas
         val centre = size.height / 2f
         val step = size.width / values.size.coerceAtLeast(1)
-        val colour = MaterialTheme.colorScheme.primary
         values.forEachIndexed { index, amplitude ->
             val half = (amplitude.coerceIn(.015f, 1f) * centre * .9f).coerceAtLeast(1f)
             val x = index * step + step / 2f
