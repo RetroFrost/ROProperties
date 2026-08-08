@@ -1,5 +1,7 @@
 package dev.retrofrost.roproperties.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,11 +15,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -30,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -53,18 +56,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.retrofrost.roproperties.io.ImportedPropertyValue
+import dev.retrofrost.roproperties.io.PropertyTextFormat
 import dev.retrofrost.roproperties.model.EditMode
 import dev.retrofrost.roproperties.model.KnowledgeConfidence
 import dev.retrofrost.roproperties.model.PropertyCategory
 import dev.retrofrost.roproperties.model.PropertyCategoryClassifier
 import dev.retrofrost.roproperties.model.PropertyUiItem
 import dev.retrofrost.roproperties.model.RiskLevel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,8 +83,59 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
     val snackbar = remember { SnackbarHostState() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+
     var selected by remember { mutableStateOf<PropertyUiItem?>(null) }
     var editing by remember { mutableStateOf<PropertyUiItem?>(null) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var importText by rememberSaveable { mutableStateOf("") }
+    var pendingExportText by remember { mutableStateOf<String?>(null) }
+
+    val parsedImport = remember(importText) { PropertyTextFormat.parse(importText) }
+
+    val saveTextLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        val text = pendingExportText
+        if (uri != null && text != null) {
+            scope.launch {
+                val success = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
+                            writer.write(text)
+                        } ?: error("Could not open the selected file")
+                    }
+                }.isSuccess
+                viewModel.showMessage(
+                    if (success) "Selected properties exported to TXT." else "Could not export the TXT file."
+                )
+                if (success) viewModel.cancelSelection()
+            }
+        }
+        pendingExportText = null
+    }
+
+    val openTextLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val loaded = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                            ?: error("Could not open the selected file")
+                    }
+                }
+                loaded.onSuccess {
+                    importText = it
+                    showImportDialog = true
+                }.onFailure {
+                    viewModel.showMessage("Could not read that text file.")
+                }
+            }
+        }
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -85,7 +146,7 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = true,
+        gesturesEnabled = !state.selectionMode,
         drawerContent = {
             AppDrawer(
                 state = state,
@@ -97,6 +158,10 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
                     viewModel.setConfidenceFilter(confidence)
                     scope.launch { drawerState.close() }
                 },
+                onImportRequested = {
+                    scope.launch { drawerState.close() }
+                    showImportDialog = true
+                },
             )
         },
     ) {
@@ -107,28 +172,61 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
                     title = {
                         Column {
                             Text(
-                                state.category.label,
+                                if (state.selectionMode) "${state.selectedNames.size} selected" else state.category.label,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                "${state.filteredProperties.size} properties",
+                                if (state.selectionMode) {
+                                    "Select properties to export"
+                                } else {
+                                    "${state.filteredProperties.size} properties"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            TwoLineMenuGlyph()
+                        if (state.selectionMode) {
+                            TextButton(onClick = viewModel::cancelSelection) { Text("Cancel") }
+                        } else {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                TwoLineMenuGlyph()
+                            }
                         }
                     },
                     actions = {
-                        TextButton(onClick = viewModel::refresh, enabled = !state.loading) {
-                            Text("Refresh")
+                        if (state.selectionMode) {
+                            TextButton(onClick = viewModel::toggleSelectAllFiltered) {
+                                Text(if (state.allFilteredSelected) "Clear all" else "Select all")
+                            }
+                        } else {
+                            TextButton(onClick = viewModel::beginSelection, enabled = !state.loading) {
+                                Text("Select")
+                            }
+                            TextButton(onClick = viewModel::refresh, enabled = !state.loading) {
+                                Text("Refresh")
+                            }
                         }
                     },
                 )
+            },
+            bottomBar = {
+                if (state.selectionMode) {
+                    SelectionBottomBar(
+                        selectedCount = state.selectedNames.size,
+                        onExport = {
+                            if (state.selectedProperties.isEmpty()) {
+                                viewModel.showMessage("Select at least one property first.")
+                            } else {
+                                val text = PropertyTextFormat.export(state.selectedProperties.map { it.property })
+                                pendingExportText = text
+                                saveTextLauncher.launch("ROProperties-${state.selectedNames.size}-properties.txt")
+                            }
+                        },
+                    )
+                }
             },
             snackbarHost = { SnackbarHost(snackbar) },
         ) { padding ->
@@ -137,6 +235,7 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
                 modifier = Modifier.padding(padding),
                 onQueryChanged = viewModel::setQuery,
                 onPropertySelected = { selected = it },
+                onToggleSelection = { viewModel.toggleSelection(it.property.name) },
             )
         }
     }
@@ -166,6 +265,49 @@ fun ROPropertiesApp(viewModel: MainViewModel = viewModel()) {
             },
         )
     }
+
+    if (showImportDialog) {
+        ImportPropertiesDialog(
+            text = importText,
+            parsedValues = parsedImport,
+            currentPropertyNames = state.properties.mapTo(mutableSetOf()) { it.property.name },
+            runtimeAvailable = state.capabilities.resetPropAvailable,
+            persistentAvailable = state.capabilities.modulePersistenceAvailable,
+            rootAvailable = state.capabilities.rootAvailable,
+            applying = state.applying,
+            onTextChanged = { importText = it },
+            onChooseFile = { openTextLauncher.launch(arrayOf("text/plain", "text/*", "application/octet-stream")) },
+            onPaste = {
+                val pasted = clipboard.getText()?.text.orEmpty()
+                if (pasted.isBlank()) viewModel.showMessage("Clipboard does not contain text.") else importText = pasted
+            },
+            onDismiss = { if (!state.applying) showImportDialog = false },
+            onApply = { values, mode ->
+                viewModel.applyImported(values, mode)
+                showImportDialog = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun SelectionBottomBar(selectedCount: Int, onExport: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "$selectedCount selected",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(onClick = onExport, enabled = selectedCount > 0) {
+                Text("Export TXT")
+            }
+        }
+    }
 }
 
 @Composable
@@ -173,6 +315,7 @@ private fun AppDrawer(
     state: MainUiState,
     onCategorySelected: (PropertyCategory) -> Unit,
     onConfidenceSelected: (KnowledgeConfidence?) -> Unit,
+    onImportRequested: () -> Unit,
 ) {
     ModalDrawerSheet(
         drawerContainerColor = MaterialTheme.colorScheme.surface,
@@ -224,11 +367,46 @@ private fun AppDrawer(
                 )
             }
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(18.dp))
+            DrawerSectionTitle("Tools")
+            DrawerRow(
+                title = "Import properties",
+                subtitle = "TXT or paste",
+                selected = false,
+                onClick = onImportRequested,
+            )
+
+            Spacer(Modifier.height(18.dp))
+            DrawerSectionTitle("Editing modes")
+            EditMode.entries.forEach { mode ->
+                ModeInfoCard(mode)
+                Spacer(Modifier.height(8.dp))
+            }
+
+            Spacer(Modifier.height(18.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Spacer(Modifier.height(16.dp))
             RootStatusCard(state)
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun ModeInfoCard(mode: EditMode) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(mode.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(3.dp))
+            Text(
+                mode.description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -252,9 +430,7 @@ private fun DrawerRow(
 ) {
     Surface(
         onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         shape = RoundedCornerShape(12.dp),
         color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
     ) {
@@ -269,11 +445,7 @@ private fun DrawerRow(
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             )
             subtitle?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -285,17 +457,13 @@ private fun MainContent(
     modifier: Modifier = Modifier,
     onQueryChanged: (String) -> Unit,
     onPropertySelected: (PropertyUiItem) -> Unit,
+    onToggleSelection: (PropertyUiItem) -> Unit,
 ) {
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
+        modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
     ) {
         Spacer(Modifier.height(8.dp))
-        SearchField(
-            query = state.query,
-            onQueryChanged = onQueryChanged,
-        )
+        SearchField(query = state.query, onQueryChanged = onQueryChanged)
         Spacer(Modifier.height(14.dp))
 
         if (state.category != PropertyCategory.ALL) {
@@ -311,7 +479,15 @@ private fun MainContent(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(state.filteredProperties, key = { it.property.name }) { item ->
-                    PropertyRow(item, onClick = { onPropertySelected(item) })
+                    PropertyRow(
+                        item = item,
+                        selectionMode = state.selectionMode,
+                        selected = item.property.name in state.selectedNames,
+                        onClick = {
+                            if (state.selectionMode) onToggleSelection(item) else onPropertySelected(item)
+                        },
+                        onToggleSelection = { onToggleSelection(item) },
+                    )
                 }
                 item { Spacer(Modifier.height(28.dp)) }
             }
@@ -327,11 +503,7 @@ private fun SearchField(query: String, onQueryChanged: (String) -> Unit) {
         modifier = Modifier.fillMaxWidth(),
         placeholder = { Text("Search properties") },
         leadingIcon = {
-            Text(
-                "⌕",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text("⌕", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         },
         trailingIcon = if (query.isNotEmpty()) {
             {
@@ -356,17 +528,9 @@ private fun CategoryIntro(category: PropertyCategory) {
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(
-                category.label,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
+            Text(category.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(5.dp))
-            Text(
-                category.description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text(category.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (category == PropertyCategory.SPOOFING) {
                 Spacer(Modifier.height(10.dp))
                 Text(
@@ -399,11 +563,7 @@ private fun EmptyState(state: MainUiState) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(
-            "No properties here",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
+        Text("No properties here", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
             if (state.query.isNotBlank()) "Try another search." else "This device does not expose matching ro.* values.",
@@ -413,59 +573,70 @@ private fun EmptyState(state: MainUiState) {
 }
 
 @Composable
-private fun PropertyRow(item: PropertyUiItem, onClick: () -> Unit) {
+private fun PropertyRow(
+    item: PropertyUiItem,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onToggleSelection: () -> Unit,
+) {
     val isSpoofing = PropertyCategoryClassifier.isSpoofingProperty(item.property.name)
     Surface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            if (selectionMode) {
+                Checkbox(checked = selected, onCheckedChange = { onToggleSelection() })
+                Spacer(Modifier.width(6.dp))
+            }
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = item.property.name,
+                        modifier = Modifier.fillMaxWidth(0.78f),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        item.explanation.risk.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (item.explanation.risk >= RiskLevel.HIGH) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(7.dp))
                 Text(
-                    text = item.property.name,
-                    modifier = Modifier.fillMaxWidth(0.78f),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.SemiBold,
+                    item.property.value.ifEmpty { "(empty)" },
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodyMedium,
                 )
+                Spacer(Modifier.height(7.dp))
                 Text(
-                    item.explanation.risk.label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (item.explanation.risk >= RiskLevel.HIGH) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
+                    item.explanation.propertyMeaning,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-            Spacer(Modifier.height(7.dp))
-            Text(
-                item.property.value.ifEmpty { "(empty)" },
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(Modifier.height(7.dp))
-            Text(
-                item.explanation.propertyMeaning,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MiniLabel(item.explanation.confidence.label)
-                if (isSpoofing) MiniLabel("Spoofing")
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MiniLabel(item.explanation.confidence.label)
+                    if (isSpoofing) MiniLabel("Spoofing")
+                }
             }
         }
     }
@@ -473,10 +644,7 @@ private fun PropertyRow(item: PropertyUiItem, onClick: () -> Unit) {
 
 @Composable
 private fun MiniLabel(text: String) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-    ) {
+    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
         Text(
             text,
             modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
@@ -521,11 +689,7 @@ private fun RootStatusCard(state: MainUiState) {
             )
             Column {
                 Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -535,18 +699,10 @@ private fun RootStatusCard(state: MainUiState) {
 private fun TwoLineMenuGlyph() {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Box(
-            Modifier
-                .width(19.dp)
-                .height(2.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(MaterialTheme.colorScheme.onSurface),
+            Modifier.width(19.dp).height(2.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.onSurface),
         )
         Box(
-            Modifier
-                .width(13.dp)
-                .height(2.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(MaterialTheme.colorScheme.onSurface),
+            Modifier.width(13.dp).height(2.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.onSurface),
         )
     }
 }
@@ -563,11 +719,7 @@ private fun PropertyDetailsSheet(
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp)
-                .verticalScroll(rememberScrollState()),
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp).verticalScroll(rememberScrollState()),
         ) {
             Text(
                 item.property.name,
@@ -615,17 +767,12 @@ private fun PropertyDetailsSheet(
 
             Spacer(Modifier.height(18.dp))
             when {
-                !canEdit -> Text(
-                    "Root is not available, so this device is currently read-only.",
-                    color = MaterialTheme.colorScheme.error,
-                )
+                !canEdit -> Text("Root is not available, so this device is currently read-only.", color = MaterialTheme.colorScheme.error)
                 !runtimeAvailable && !persistentAvailable -> Text(
                     "Root works, but neither resetprop nor a module persistence directory is available.",
                     color = MaterialTheme.colorScheme.error,
                 )
-                else -> Button(onClick = onEdit, modifier = Modifier.fillMaxWidth()) {
-                    Text("Edit property")
-                }
+                else -> Button(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Edit property") }
             }
         }
     }
@@ -644,6 +791,43 @@ private fun MetadataRow(label: String, value: String) {
     Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Text(value, style = MaterialTheme.typography.bodyMedium)
     Spacer(Modifier.height(12.dp))
+}
+
+@Composable
+private fun EditModeChoice(
+    mode: EditMode,
+    selected: Boolean,
+    enabled: Boolean,
+    onSelected: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerLow,
+        onClick = { if (enabled) onSelected() },
+        enabled = enabled,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            RadioButton(selected = selected, onClick = { if (enabled) onSelected() }, enabled = enabled)
+            Column(modifier = Modifier.fillMaxWidth().padding(top = 7.dp)) {
+                Text(
+                    mode.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    mode.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -693,23 +877,24 @@ private fun EditPropertyDialog(
                 )
                 Spacer(Modifier.height(14.dp))
                 Text("Apply mode", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Choose whether this change should happen now, survive reboot, or both.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
                 EditMode.entries.forEach { candidate ->
                     val supported = when (candidate) {
                         EditMode.RUNTIME -> runtimeAvailable
                         EditMode.PERSISTENT -> persistentAvailable
                         EditMode.BOTH -> runtimeAvailable && persistentAvailable
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(
-                            selected = mode == candidate,
-                            onClick = { if (supported) mode = candidate },
-                            enabled = supported,
-                        )
-                        Text(
-                            candidate.label,
-                            color = if (supported) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    EditModeChoice(
+                        mode = candidate,
+                        selected = mode == candidate,
+                        enabled = supported,
+                        onSelected = { mode = candidate },
+                    )
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -719,22 +904,126 @@ private fun EditPropertyDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = { onApply(value, mode) },
-                enabled = acknowledged && !applying,
-            ) {
+            Button(onClick = { onApply(value, mode) }, enabled = acknowledged && !applying) {
                 if (applying) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.width(18.dp).height(18.dp),
-                        strokeWidth = 2.dp,
-                    )
+                    CircularProgressIndicator(modifier = Modifier.width(18.dp).height(18.dp), strokeWidth = 2.dp)
                 } else {
                     Text("Apply")
                 }
             }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !applying) { Text("Cancel") }
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !applying) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ImportPropertiesDialog(
+    text: String,
+    parsedValues: List<ImportedPropertyValue>,
+    currentPropertyNames: Set<String>,
+    runtimeAvailable: Boolean,
+    persistentAvailable: Boolean,
+    rootAvailable: Boolean,
+    applying: Boolean,
+    onTextChanged: (String) -> Unit,
+    onChooseFile: () -> Unit,
+    onPaste: () -> Unit,
+    onDismiss: () -> Unit,
+    onApply: (List<ImportedPropertyValue>, EditMode) -> Unit,
+) {
+    var mode by rememberSaveable {
+        mutableStateOf(
+            when {
+                runtimeAvailable && persistentAvailable -> EditMode.BOTH
+                runtimeAvailable -> EditMode.RUNTIME
+                else -> EditMode.PERSISTENT
+            }
+        )
+    }
+    var acknowledged by rememberSaveable { mutableStateOf(false) }
+    val existingCount = parsedValues.count { it.name in currentPropertyNames }
+    val newCount = parsedValues.size - existingCount
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import properties") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Paste property text or choose a TXT file. ROProperties accepts its own exports, ro.name=value lines, and Android [ro.name]: [value] dumps.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onChooseFile) { Text("Choose file") }
+                    OutlinedButton(onClick = onPaste) { Text("Paste") }
+                    if (text.isNotEmpty()) {
+                        TextButton(onClick = { onTextChanged("") }) { Text("Clear") }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = onTextChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("ro.product.model = SM-G975F\nro.build.type = user") },
+                    minLines = 7,
+                    maxLines = 14,
+                    shape = RoundedCornerShape(16.dp),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("${parsedValues.size} valid ro.* properties found", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "$existingCount already exist on this device${if (newCount > 0) "; $newCount are new names" else ""}.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                Text("Apply mode", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                EditMode.entries.forEach { candidate ->
+                    val supported = when (candidate) {
+                        EditMode.RUNTIME -> runtimeAvailable
+                        EditMode.PERSISTENT -> persistentAvailable
+                        EditMode.BOTH -> runtimeAvailable && persistentAvailable
+                    }
+                    EditModeChoice(
+                        mode = candidate,
+                        selected = mode == candidate,
+                        enabled = supported,
+                        onSelected = { mode = candidate },
+                    )
+                }
+                if (!rootAvailable) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Root access is required to apply imported values.", color = MaterialTheme.colorScheme.error)
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = acknowledged, onCheckedChange = { acknowledged = it })
+                    Text("I understand this can change many system properties at once.")
+                }
+            }
         },
+        confirmButton = {
+            Button(
+                onClick = { onApply(parsedValues, mode) },
+                enabled = parsedValues.isNotEmpty() && rootAvailable && acknowledged && !applying,
+            ) {
+                if (applying) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text("Apply ${parsedValues.size}")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !applying) { Text("Cancel") } },
     )
 }
