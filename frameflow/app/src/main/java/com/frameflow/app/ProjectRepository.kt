@@ -69,7 +69,6 @@ class ProjectRepository(private val context: Context) {
                 output.write(json.toByteArray(Charsets.UTF_8))
                 output.fd.sync()
             }
-            // Verify the temp document before touching the last known-good copy.
             projectFromJson(temporary.readText())
 
             if (target.exists()) {
@@ -128,7 +127,6 @@ class ProjectRepository(private val context: Context) {
         return clone
     }
 
-    /** Imports both modern ZIP-based .frameflow files and legacy plain-JSON documents. */
     fun importProject(uri: Uri): ProjectState {
         val temporary = File.createTempFile("frameflow-import-", ".tmp", context.cacheDir)
         try {
@@ -192,10 +190,7 @@ class ProjectRepository(private val context: Context) {
                 val destination = File(dir, importedAudioName ?: "audio")
                 importedAudioTemp!!.copyTo(destination, overwrite = true)
                 local.audioFileName = destination.name
-            } else {
-                // Legacy projects only referenced an app-private filename, which is not portable.
-                local.audioFileName = null
-            }
+            } else local.audioFileName = null
             save(local)
             importedAudioTemp?.delete()
             return local
@@ -222,12 +217,8 @@ class ProjectRepository(private val context: Context) {
 
         val scale = minOf(1f, MAX_RASTER_SIDE.toFloat() / maxOf(decoded.width, decoded.height))
         val bitmap = if (scale < 1f) {
-            Bitmap.createScaledBitmap(
-                decoded,
-                (decoded.width * scale).toInt().coerceAtLeast(1),
-                (decoded.height * scale).toInt().coerceAtLeast(1),
-                true
-            ).also { if (it !== decoded) decoded.recycle() }
+            Bitmap.createScaledBitmap(decoded, (decoded.width * scale).toInt().coerceAtLeast(1), (decoded.height * scale).toInt().coerceAtLeast(1), true)
+                .also { if (it !== decoded) decoded.recycle() }
         } else decoded
 
         val bytes = try {
@@ -235,9 +226,7 @@ class ProjectRepository(private val context: Context) {
                 check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, buffer)) { "Unable to encode imported image" }
                 buffer.toByteArray()
             }
-        } finally {
-            if (!bitmap.isRecycled) bitmap.recycle()
-        }
+        } finally { if (!bitmap.isRecycled) bitmap.recycle() }
         require(bytes.size <= 64 * 1024 * 1024) { "Imported image is too large" }
 
         val name = displayName(uri).substringBeforeLast('.').ifBlank { "Imported image" }.take(64)
@@ -284,7 +273,6 @@ class ProjectRepository(private val context: Context) {
         return File(mediaDir(project.id), name).takeIf { it.isFile && it.exists() }
     }
 
-    /** Modern .frameflow documents are ZIP containers with project.json + portable media. */
     fun exportProject(project: ProjectState, uri: Uri) {
         context.contentResolver.openOutputStream(uri, "w")?.use { output ->
             ZipOutputStream(output.buffered()).use { zip ->
@@ -303,12 +291,9 @@ class ProjectRepository(private val context: Context) {
     fun exportCurrentPng(project: ProjectState, frameIndex: Int, uri: Uri) {
         val bitmap = FrameRenderer.render(project, frameIndex)
         try {
-            context.contentResolver.openOutputStream(uri, "w")?.use { stream ->
-                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
-            } ?: error("Unable to create PNG")
-        } finally {
-            if (!bitmap.isRecycled) bitmap.recycle()
-        }
+            context.contentResolver.openOutputStream(uri, "w")?.use { stream -> check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) }
+                ?: error("Unable to create PNG")
+        } finally { if (!bitmap.isRecycled) bitmap.recycle() }
     }
 
     fun exportFramesZip(project: ProjectState, uri: Uri) {
@@ -320,9 +305,7 @@ class ProjectRepository(private val context: Context) {
                         zip.putNextEntry(ZipEntry("frame-${(index + 1).toString().padStart(4, '0')}.png"))
                         check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, zip))
                         zip.closeEntry()
-                    } finally {
-                        if (!bitmap.isRecycled) bitmap.recycle()
-                    }
+                    } finally { if (!bitmap.isRecycled) bitmap.recycle() }
                 }
                 zip.putNextEntry(ZipEntry("project.json"))
                 zip.write(projectToJson(project).toString(2).toByteArray(Charsets.UTF_8))
@@ -373,14 +356,7 @@ class ProjectRepository(private val context: Context) {
     }
 }
 
-fun ProjectState.toMeta() = ProjectMeta(
-    id = id,
-    name = name,
-    modifiedAt = modifiedAt,
-    frameCount = frames.size,
-    width = canvasWidth,
-    height = canvasHeight
-)
+fun ProjectState.toMeta() = ProjectMeta(id, name, modifiedAt, frames.size, canvasWidth, canvasHeight)
 
 fun projectToJson(project: ProjectState): JSONObject = JSONObject().apply {
     put("format", "frameflow")
@@ -425,6 +401,9 @@ private fun layerToJson(layer: LayerState) = JSONObject().apply {
     put("rotationDeg", layer.rotationDeg.toDouble())
     put("rasterPngBase64", layer.rasterPngBase64 ?: JSONObject.NULL)
     put("rasterName", layer.rasterName ?: JSONObject.NULL)
+    put("folderName", layer.folderName ?: JSONObject.NULL)
+    put("clipToBelow", layer.clipToBelow)
+    put("isRigSource", layer.isRigSource)
     put("strokes", JSONArray().apply { layer.strokes.forEach { put(strokeToJson(it)) } })
 }
 
@@ -434,9 +413,7 @@ private fun strokeToJson(stroke: StrokeData) = JSONObject().apply {
     put("width", stroke.width.toDouble())
     put("alpha", stroke.alpha.toDouble())
     put("erase", stroke.erase)
-    put("points", JSONArray().apply {
-        stroke.points.forEach { point -> put(JSONArray().put(point.x.toDouble()).put(point.y.toDouble())) }
-    })
+    put("points", JSONArray().apply { stroke.points.forEach { point -> put(JSONArray().put(point.x.toDouble()).put(point.y.toDouble())) } })
 }
 
 fun projectFromJson(text: String): ProjectState {
@@ -495,7 +472,10 @@ fun projectFromJson(text: String): ProjectState {
                         scaleY = layerObject.safeFloat("scaleY", 1f, -20f, 20f),
                         rotationDeg = layerObject.safeFloat("rotationDeg", 0f, -100_000f, 100_000f),
                         rasterPngBase64 = layerObject.optString("rasterPngBase64").takeIf { it.isNotBlank() && it != "null" && it.length <= 96 * 1024 * 1024 },
-                        rasterName = layerObject.optString("rasterName").takeIf { it.isNotBlank() && it != "null" }?.take(120)
+                        rasterName = layerObject.optString("rasterName").takeIf { it.isNotBlank() && it != "null" }?.take(120),
+                        folderName = layerObject.optString("folderName").takeIf { it.isNotBlank() && it != "null" }?.take(64),
+                        clipToBelow = layerObject.optBoolean("clipToBelow", false),
+                        isRigSource = layerObject.optBoolean("isRigSource", false)
                     ))
                 }
             }
