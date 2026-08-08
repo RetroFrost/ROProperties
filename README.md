@@ -1,80 +1,74 @@
 # ROProperties
 
-**Current app version: 0.3.0**
+**Current app version: 0.4.0**
 
-ROProperties is a native Android Material 3 app for inspecting and editing Android `ro.*` system properties on rooted devices.
+ROProperties is a native Android Material 3 **property inspector and controlled override manager** for Android `ro.*` properties. Reading works without root; supported overrides require root.
 
-Unlike property viewers that only recognise a small hard-coded list, ROProperties has a knowledge engine that separately explains **what each property means** and **what its current value means**. Known AOSP properties get curated definitions; OEM/vendor and undocumented properties get clearly labelled inference instead of a fake definitive answer.
+It deliberately distinguishes the property-service string from the real Android/framework/hardware state. A successful `resetprop` is not presented as proof that a subsystem, device identity, verified-boot state, API level, encryption state, or hardware capability actually changed.
 
-## Features
+## 0.4.0 behaviour model
 
-- Discovers every `ro.*` property exposed by Android's property service.
-- ChatGPT-inspired Android navigation: compact two-line menu, side drawer, neutral light/dark surfaces and a cleaner property feed.
-- Real property categories instead of a single flat list.
-- Dedicated **Spoofing properties** category for build/device identity values commonly read when software identifies the device.
-- Additional Build & identity, Hardware, OEM & vendor, and Runtime & debug categories.
-- Search plus documented/known/inferred/unknown confidence filtering from the drawer.
-- Property meaning, current-value meaning, known alternative values, origin/namespace, consumers, edit behaviour, reboot notes and risk level.
-- Runtime editing through root `resetprop` when supported.
-- Persistent editing through a Magisk-compatible `system.prop` module in `/data/adb/modules/roproperties`.
-- Runtime + persistent mode.
-- In-app explanations for Runtime, Persistent, and Runtime + persistent modes.
-- Multi-select properties, including **Select all** for the current category/search result.
-- Export selected property names and values to a human-readable, styled TXT file.
-- Import values back from a TXT file or pasted clipboard/text content and apply them in bulk.
-- Explicit warnings for compatibility/security/boot-sensitive properties.
-- Neutral Material 3 light and dark themes.
+Every property receives an override policy in addition to its meaning/value explanation:
 
-## Import and export
+- **Spoofable** — identity-facing strings such as model, brand, device and build fingerprint. These default to **Persistent / next boot** because Android and apps commonly cache them.
+- **Boot-time** — vendor/ODM/boot-oriented metadata where a live property-service write may not reconfigure the consumer.
+- **Advanced** — properties that can be overridden but whose consumer behaviour is not guaranteed.
+- **Read-only** — bootloader/AVB truth such as verified-boot and lock-state properties. ROProperties keeps these information-only instead of pretending a string changes trust state.
+- **Dangerous** — core runtime/security/compatibility metadata such as zygote, crypto state, Treble/VNDK, API level and first API level. ROProperties intentionally refuses to override these.
 
-Enter selection mode from the property list, choose individual properties or use **Select all**, then export them to TXT. The exported document includes a readable heading and numbered property blocks, while each block also contains a plain round-trip line such as:
+Each row also shows an **apply strategy**: Live override, Restart-sensitive, Next boot, or Do not modify.
 
-```text
-ro.product.model = SM-G975F
-```
+## Effective value checks
 
-That makes the file pleasant to read while still being easy to edit and import again.
+For canonical Android identity properties, ROProperties compares:
 
-The importer accepts three forms:
+1. the current property-service / `getprop` value,
+2. the mapped Android `Build.*` value cached by the currently running ROProperties process, and
+3. any saved persistent override in `/data/adb/modules/roproperties/system.prop`.
 
-```text
-ro.product.model = SM-G975F
-ro.product.model=SM-G975F
-[ro.product.model]: [SM-G975F]
-```
+If `getprop` says one model/fingerprint while `Build.*` still reports another, the UI shows **Framework cache differs** instead of calling the spoof fully effective.
 
-It can read a selected text file or pasted text from the clipboard. Before applying anything, ROProperties shows how many valid `ro.*` entries were found and lets the user choose Runtime, Persistent, or Runtime + persistent for the whole import. Duplicate property names use the last supplied value.
+A live-only override is never followed by a misleading reboot recommendation: reboot would discard it. **Reboot now** is offered only after a persistent override has actually been saved.
 
-## Editing modes
+## Apply modes
 
-- **Runtime** — applies the value immediately using `resetprop`. It normally lasts only until the next reboot, and components that already cached the old property may not notice it.
-- **Persistent** — saves the value in ROProperties' root module so it is applied again on future boots. The currently running property may remain unchanged until reboot.
-- **Runtime + persistent** — applies the value immediately and saves it for future boots.
-
-These explanations are also shown directly in the app wherever an edit mode is selected.
+- **Live override** — uses `resetprop` and verifies the property-service result with `getprop`. Existing framework/app processes can still retain cached values.
+- **Persistent / next boot** — saves the override in the ROProperties root module. Preferred for identity/boot-sensitive values.
+- **Live + persistent** — changes the property service now and saves the next-boot override. A reboot can still be required before fresh framework/app processes agree.
 
 ## Spoofing properties
 
-The Spoofing properties category groups identity-facing values such as build fingerprints, product model/manufacturer/brand/device/name, build IDs, build tags/types and version metadata across Android's system/vendor/product-style namespaces.
+The dedicated **Spoofing properties** category contains device/build identity values commonly read by software. Changing these strings does not turn one device into another and does not by itself change hardware-backed or cryptographic attestation.
 
-The category is intentionally descriptive rather than promising that changing a property will bypass an integrity, compatibility or security check. Different apps and Android components can use additional signals beyond `ro.*` values.
+## Import and export
 
-## Important editing behaviour
+Selection mode supports individual selection or **Select all** for the current category/search. Selected names and values export to a readable TXT document that can be imported again.
 
-Modern Android makes `ro.*` properties immutable after boot. ROProperties therefore does **not** pretend that ordinary `setprop` can edit them. Runtime changes require a root implementation exposing `resetprop`. Persistent changes require a root framework that supports modules and `system.prop` (for example a Magisk-compatible module environment).
+The importer accepts ROProperties exports, plain `ro.name=value` / `ro.name = value` lines, and Android `[ro.name]: [value]` dumps. Duplicate names use the last supplied value.
 
-A changed property can also be cached by Android or a vendor process. A successful `resetprop` changes the property-service value, but it does not guarantee that a component which already read the old value will reconfigure itself.
+Before bulk apply, the importer analyses the profile and warns when:
+
+- model/device/product identities disagree across partitions,
+- boot/cache-sensitive values should use persistent + reboot,
+- read-only/dangerous values will be intentionally blocked.
+
+This is useful for ported ROMs where system and vendor partitions can legitimately identify different source devices: ROProperties shows the mismatch instead of silently assuming the profile is a clean single-device spoof.
+
+## Knowledge engine
+
+ROProperties discovers every exposed `ro.*` property and separately explains **what the property means** and **what its current value means**. Curated AOSP/common properties are labelled documented/known; unknown OEM/vendor properties use clearly labelled inference rather than fabricated certainty.
 
 ## Build
 
-The project uses Kotlin, Jetpack Compose and Material 3.
+Kotlin + Jetpack Compose + Material 3, minSdk 26 / targetSdk 36.
 
 ```bash
+gradle testDebugUnitTest
 gradle assembleDebug
 ```
 
-GitHub Actions runs unit tests and builds a debug APK on pushes and pull requests.
+GitHub Actions runs unit tests and builds the debug APK on pushes and pull requests.
 
 ## Safety
 
-Changing build identity, API level, verified-boot, ABI, zygote, partition, security or vendor properties can break boot, framework behaviour, telephony, app compatibility or integrity checks. ROProperties intentionally shows risk and confidence rather than promising that spoofing a string enables the feature represented by that string.
+ROProperties cannot make hardware, bootloader trust, encryption, partition layout, framework APIs, or security patches exist merely by changing a property string. Some properties are intentionally blocked because presenting them as ordinary editable settings would be misleading or unnecessarily dangerous.
