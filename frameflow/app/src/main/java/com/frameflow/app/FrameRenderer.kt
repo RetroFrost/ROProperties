@@ -10,8 +10,12 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 object FrameRenderer {
-    /** Full-resolution render used by still/video exporters. */
+    /** Full-resolution render used by still exports. */
     fun render(project: ProjectState, frameIndex: Int): Bitmap = renderSized(project, frameIndex, null)
+
+    /** Bounded export render for codecs/GIFs that should not allocate an arbitrary 8K frame. */
+    fun renderBounded(project: ProjectState, frameIndex: Int, maxSide: Int): Bitmap =
+        renderSized(project, frameIndex, maxSide.coerceIn(128, 4096))
 
     /** Memory-bounded editor render; never creates a full-size bitmap and then shrinks it. */
     fun renderPreview(project: ProjectState, frameIndex: Int, maxSide: Int = 1400): Bitmap =
