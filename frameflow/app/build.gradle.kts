@@ -33,5 +33,6 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("com.squareup:gifencoder:0.10.1")
+    implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
