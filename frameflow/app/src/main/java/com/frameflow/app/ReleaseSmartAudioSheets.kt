@@ -3,6 +3,7 @@ package com.frameflow.app
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -10,6 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -19,8 +21,21 @@ import kotlin.math.roundToInt
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReleaseSmartSheet(editor: EditorState, history: ProjectHistory, onMessage: (String) -> Unit, dismiss: () -> Unit) {
+    val context = LocalContext.current
+    val faceLibrary = remember { FaceAssetLibrary(context.applicationContext) }
+    var faceAssets by remember { mutableStateOf(faceLibrary.list()) }
+    var faceName by rememberSaveable(editor.project.id) { mutableStateOf("My face") }
     var command by rememberSaveable(editor.project.id) { mutableStateOf("") }
+    var rangeStart by rememberSaveable(editor.project.id) { mutableStateOf("1") }
+    var rangeEnd by rememberSaveable(editor.project.id, editor.project.frames.size) { mutableStateOf(editor.project.frames.size.toString()) }
     var busy by remember { mutableStateOf(false) }
+    val currentPart = PartBatchTools.currentPart(editor)
+    fun range(): Pair<Int, Int> {
+        val start = (rangeStart.toIntOrNull() ?: 1).coerceIn(1, editor.project.frames.size) - 1
+        val end = (rangeEnd.toIntOrNull() ?: editor.project.frames.size).coerceIn(1, editor.project.frames.size) - 1
+        return start to end
+    }
+
     ModalBottomSheet(onDismissRequest = dismiss) {
         Column(Modifier.fillMaxWidth().padding(16.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Text("Smart tools", style = MaterialTheme.typography.titleLarge)
@@ -40,6 +55,7 @@ fun ReleaseSmartSheet(editor: EditorState, history: ProjectHistory, onMessage: (
                     onMessage(if (count == 0) "No limb layers were missing" else "Added $count stick-limb layers")
                 }) { Text("Missing limbs") }
             }
+
             LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 item { AssistChip(onClick = { history.checkpoint(); onMessage(if (SmartAnimationTools.insertInbetween(editor.project, editor.frameIndex)) "Inserted an editable in-between" else "A next frame is required") }, label = { Text("In-between") }) }
                 item { AssistChip(onClick = { history.checkpoint(); onMessage(if (SmartAnimationTools.continueMotion(editor.project, editor.frameIndex)) "Continued the motion" else "A previous frame is required") }, label = { Text("Continue motion") }) }
@@ -48,21 +64,62 @@ fun ReleaseSmartSheet(editor: EditorState, history: ProjectHistory, onMessage: (
                 item { AssistChip(onClick = { history.checkpoint(); val n = SmartAnimationTools.fixFrame(editor.project, editor.frameIndex); onMessage(if (n > 0) "Restored $n missing semantic layers" else "No missing semantic layer found") }, label = { Text("Fix frame") }) }
                 item { AssistChip(onClick = { history.checkpoint(); SmartAnimationTools.closeLoop(editor.project); onMessage("Added an editable loop-closing frame") }, label = { Text("Close loop") }) }
             }
-            ReleaseSectionTitle("Pose presets")
+
+            ReleaseSectionTitle("Expression presets", "Creates editable Eyes/Mouth/Eyebrows layers rather than flattening the character")
             LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                ObjectShowTools.Pose.entries.forEach { pose ->
-                    item { SuggestionChip(onClick = { history.checkpoint(); ObjectShowTools.applyPose(editor, pose) }, label = { Text(pose.label) }) }
+                items(ExpressionTools.Expression.entries) { expression ->
+                    SuggestionChip(onClick = { history.checkpoint(); ExpressionTools.apply(editor, expression) }, label = { Text(expression.label) })
                 }
             }
+
+            ReleaseSectionTitle("Pose presets")
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                items(ObjectShowTools.Pose.entries) { pose ->
+                    SuggestionChip(onClick = { history.checkpoint(); ObjectShowTools.applyPose(editor, pose) }, label = { Text(pose.label) })
+                }
+            }
+
+            ReleaseSectionTitle("Face library", "Stores actual Face/Eyes/Mouth/Eyebrows layer artwork on this device")
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(faceName, { faceName = it.take(64) }, Modifier.weight(1f), label = { Text("Asset name") }, singleLine = true)
+                Button(onClick = {
+                    runCatching { faceLibrary.save(faceName, editor.frame) }
+                        .onSuccess { faceAssets = faceLibrary.list(); onMessage("Saved ${it.name} to the face library") }
+                        .onFailure { onMessage(it.message ?: "Could not save face") }
+                }) { Text("Save face") }
+            }
+            if (faceAssets.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    items(faceAssets, key = { it.id }) { asset ->
+                        AssistChip(
+                            onClick = { history.checkpoint(); val count = faceLibrary.apply(asset, editor); onMessage("Applied ${asset.name} · $count layers") },
+                            label = { Text(asset.name) }
+                        )
+                        AssistChip(onClick = { faceLibrary.delete(asset.id); faceAssets = faceLibrary.list() }, label = { Text("Delete ${asset.name}") })
+                    }
+                }
+            }
+
+            if (currentPart != null) {
+                ReleaseSectionTitle("Same part across frames", "Target ${currentPart.label} over an explicit frame range")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(rangeStart, { rangeStart = it.filter(Char::isDigit).take(5) }, Modifier.weight(1f), label = { Text("From frame") }, singleLine = true)
+                    OutlinedTextField(rangeEnd, { rangeEnd = it.filter(Char::isDigit).take(5) }, Modifier.weight(1f), label = { Text("To frame") }, singleLine = true)
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    item { AssistChip(onClick = { val (a,b)=range(); history.checkpoint(); onMessage("Copied transform to ${PartBatchTools.copyCurrentTransform(editor,a,b)} matching layers") }, label = { Text("Copy transform") }) }
+                    item { AssistChip(onClick = { val (a,b)=range(); history.checkpoint(); onMessage("Copied artwork to ${PartBatchTools.copyCurrentArtwork(editor,a,b)} matching layers") }, label = { Text("Copy artwork") }) }
+                    item { AssistChip(onClick = { val (a,b)=range(); history.checkpoint(); onMessage("Rotated ${PartBatchTools.rotate(editor,a,b,-15f)} matching layers") }, label = { Text("Rotate −15°") }) }
+                    item { AssistChip(onClick = { val (a,b)=range(); history.checkpoint(); onMessage("Rotated ${PartBatchTools.rotate(editor,a,b,15f)} matching layers") }, label = { Text("Rotate +15°") }) }
+                    item { AssistChip(onClick = { val (a,b)=range(); history.checkpoint(); onMessage("Hid ${PartBatchTools.setVisible(editor,a,b,false)} matching layers") }, label = { Text("Hide") }) }
+                    item { AssistChip(onClick = { val (a,b)=range(); history.checkpoint(); onMessage("Showed ${PartBatchTools.setVisible(editor,a,b,true)} matching layers") }, label = { Text("Show") }) }
+                    item { AssistChip(onClick = { val (a,b)=range(); history.checkpoint(); onMessage("Deleted ${PartBatchTools.delete(editor,a,b)} matching layers") }, label = { Text("Delete part") }) }
+                }
+            }
+
             ReleaseSectionTitle("Command", "Local deterministic command interpreter; no network or API key")
             Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    command,
-                    { command = it.take(220) },
-                    modifier = Modifier.weight(1f),
-                    label = { Text("e.g. clone, hold 2 seconds, rotate 20, bounce and zoom in") },
-                    singleLine = true
-                )
+                OutlinedTextField(command, { command = it.take(220) }, modifier = Modifier.weight(1f), label = { Text("e.g. clone, hold 2 seconds, rotate 20, bounce and zoom in") }, singleLine = true)
                 Button(onClick = {
                     history.checkpoint()
                     runCatching { SmartAnimationTools.applyCommand(editor, command) }
@@ -103,11 +160,8 @@ fun ReleaseAudioSheet(
             } else {
                 Text(file.name, style = MaterialTheme.typography.titleSmall)
                 Surface(Modifier.fillMaxWidth().height(92.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-                    if (waveform == null) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
-                    } else {
-                        WaveformView(waveform ?: FloatArray(0))
-                    }
+                    if (waveform == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
+                    else WaveformView(waveform ?: FloatArray(0))
                 }
                 HistorySliderRow("audio-volume", "Volume", project.audioVolume, 0f..1f, "${(project.audioVolume * 100).roundToInt()}%", history) {
                     if (it > 0f) previousVolume = it
