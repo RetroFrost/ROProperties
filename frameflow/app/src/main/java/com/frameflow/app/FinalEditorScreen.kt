@@ -5,11 +5,9 @@ import androidx.compose.runtime.Composable
 /**
  * Stable entry point for the Frameflow editor.
  *
- * The production editor remains the battle-tested FullEditorScreen while the
- * final tools are split into independent modules. ReliableControls.kt shadows
- * the old Material slider with the continuous gesture implementation and fixes
- * the timeline's unstable frame identity, so the duration/size/opacity drags no
- * longer get cancelled mid-gesture.
+ * Release-hardening note: all visible editor functionality is routed through
+ * FullEditorScreen. Experimental/future UI must not be exposed here until its
+ * actions are backed by real project operations and covered by CI/runtime tests.
  */
 @Composable
 fun FinalEditorScreen(
