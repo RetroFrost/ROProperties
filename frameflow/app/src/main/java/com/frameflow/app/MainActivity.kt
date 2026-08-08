@@ -33,17 +33,30 @@ fun FrameflowApp() {
     val repository = remember { ProjectRepository(context.applicationContext) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    var projects by remember { mutableStateOf(repository.listProjects()) }
+    var projects by remember { mutableStateOf<List<ProjectMeta>>(emptyList()) }
     var currentProject by remember { mutableStateOf<ProjectState?>(null) }
 
-    fun refreshProjects() { projects = repository.listProjects() }
-    fun safeName(name: String): String = name.replace(Regex("[^A-Za-z0-9._ -]"), "_").trim().ifBlank { "Frameflow" }
+    fun safeName(name: String): String = name.replace(Regex("[^A-Za-z0-9._ -]"), "_").trim().take(80).ifBlank { "Frameflow" }
     fun notify(text: String) { scope.launch { snackbar.showSnackbar(text) } }
+    fun refreshProjects() {
+        scope.launch {
+            val loaded = withContext(Dispatchers.IO) { repository.listProjects() }
+            projects = loaded
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        projects = withContext(Dispatchers.IO) { repository.listProjects() }
+    }
 
     val importProjectLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             runCatching { withContext(Dispatchers.IO) { repository.importProject(uri) } }
-                .onSuccess { currentProject = it; refreshProjects(); notify("Project imported") }
+                .onSuccess {
+                    currentProject = it
+                    projects = withContext(Dispatchers.IO) { repository.listProjects() }
+                    notify("Project imported")
+                }
                 .onFailure { notify("Import failed: ${it.message ?: "unknown error"}") }
         }
     }
@@ -51,11 +64,11 @@ fun FrameflowApp() {
     val importImageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val project = currentProject
         if (uri != null && project != null) scope.launch {
+            val targetFrame = project.activeFrameIndex
             runCatching {
-                withContext(Dispatchers.IO) { repository.importImageLayer(project, project.activeFrameIndex, uri) }
+                withContext(Dispatchers.IO) { repository.importImageLayer(project, targetFrame, uri) }
             }.onSuccess {
-                project.touch()
-                notify("Image added to frame ${project.activeFrameIndex + 1}")
+                notify("Image added to frame ${targetFrame + 1}")
             }.onFailure { notify("Image import failed: ${it.message ?: "unknown error"}") }
         }
     }
@@ -80,10 +93,13 @@ fun FrameflowApp() {
 
     val exportPngLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
         val project = currentProject
-        if (uri != null && project != null) scope.launch {
-            runCatching { withContext(Dispatchers.IO) { repository.exportCurrentPng(project, project.activeFrameIndex, uri) } }
-                .onSuccess { notify("Frame ${project.activeFrameIndex + 1} PNG exported") }
-                .onFailure { notify("PNG export failed: ${it.message ?: "unknown error"}") }
+        if (uri != null && project != null) {
+            val targetFrame = project.activeFrameIndex
+            scope.launch {
+                runCatching { withContext(Dispatchers.IO) { repository.exportCurrentPng(project, targetFrame, uri) } }
+                    .onSuccess { notify("Frame ${targetFrame + 1} PNG exported") }
+                    .onFailure { notify("PNG export failed: ${it.message ?: "unknown error"}") }
+            }
         }
     }
 
@@ -121,16 +137,20 @@ fun FrameflowApp() {
         val project = currentProject ?: return@LaunchedEffect
         if (project.revision > 0) {
             delay(700)
-            withContext(Dispatchers.IO) { repository.save(project) }
-            refreshProjects()
+            runCatching { withContext(Dispatchers.IO) { repository.save(project) } }
+                .onFailure { notify("Autosave failed: ${it.message ?: "storage error"}") }
+            projects = withContext(Dispatchers.IO) { repository.listProjects() }
         }
     }
 
     BackHandler(enabled = currentProject != null) {
-        val project = currentProject
-        if (project != null) scope.launch { withContext(Dispatchers.IO) { repository.save(project) } }
+        val project = currentProject ?: return@BackHandler
         currentProject = null
-        refreshProjects()
+        scope.launch {
+            runCatching { withContext(Dispatchers.IO) { repository.save(project) } }
+                .onFailure { notify("Save failed: ${it.message ?: "storage error"}") }
+            projects = withContext(Dispatchers.IO) { repository.listProjects() }
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -140,28 +160,58 @@ fun FrameflowApp() {
                 projects = projects,
                 onNewProject = { name, width, height, mode ->
                     val created = ProjectState(name = name, canvasWidth = width, canvasHeight = height, mode = mode)
-                    repository.save(created)
                     currentProject = created
-                    refreshProjects()
+                    scope.launch {
+                        runCatching { withContext(Dispatchers.IO) { repository.save(created) } }
+                            .onFailure { notify("Initial save failed: ${it.message ?: "storage error"}") }
+                        projects = withContext(Dispatchers.IO) { repository.listProjects() }
+                    }
                 },
                 onOpenProject = { id ->
-                    currentProject = repository.load(id)
-                    if (currentProject == null) notify("That project could not be opened")
+                    scope.launch {
+                        val loaded = withContext(Dispatchers.IO) { repository.load(id) }
+                        if (loaded == null) notify("That project could not be opened") else currentProject = loaded
+                    }
                 },
-                onDuplicateProject = { id -> repository.load(id)?.let(repository::duplicate); refreshProjects() },
-                onDeleteProject = { id -> repository.delete(id); refreshProjects() },
-                onImportProject = { importProjectLauncher.launch(arrayOf("application/octet-stream", "application/json", "text/plain", "*/*")) }
+                onDuplicateProject = { id ->
+                    scope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                repository.load(id)?.let(repository::duplicate)
+                            }
+                        }.onFailure { notify("Duplicate failed: ${it.message ?: "storage error"}") }
+                        projects = withContext(Dispatchers.IO) { repository.listProjects() }
+                    }
+                },
+                onDeleteProject = { id ->
+                    scope.launch {
+                        runCatching { withContext(Dispatchers.IO) { repository.delete(id) } }
+                            .onFailure { notify("Delete failed: ${it.message ?: "storage error"}") }
+                        projects = withContext(Dispatchers.IO) { repository.listProjects() }
+                    }
+                },
+                onImportProject = { importProjectLauncher.launch(arrayOf("application/octet-stream", "application/zip", "application/json", "text/plain", "*/*")) }
             )
         } else {
             FinalEditorScreen(
                 project = project,
                 repository = repository,
                 onBack = {
-                    repository.save(project)
                     currentProject = null
-                    refreshProjects()
+                    scope.launch {
+                        runCatching { withContext(Dispatchers.IO) { repository.save(project) } }
+                            .onFailure { notify("Save failed: ${it.message ?: "storage error"}") }
+                        projects = withContext(Dispatchers.IO) { repository.listProjects() }
+                    }
                 },
-                onSave = { repository.save(project); refreshProjects(); notify("Saved") },
+                onSave = {
+                    scope.launch {
+                        runCatching { withContext(Dispatchers.IO) { repository.save(project) } }
+                            .onSuccess { notify("Saved") }
+                            .onFailure { notify("Save failed: ${it.message ?: "storage error"}") }
+                        projects = withContext(Dispatchers.IO) { repository.listProjects() }
+                    }
+                },
                 onImportImage = { importImageLauncher.launch(arrayOf("image/png", "image/jpeg", "image/webp", "image/*")) },
                 onImportAudio = { importAudioLauncher.launch(arrayOf("audio/*")) },
                 onExportProject = { exportProjectLauncher.launch("${safeName(project.name)}.frameflow") },
