@@ -7,41 +7,68 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RectF
 import android.util.Base64
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 object FrameRenderer {
-    fun render(project: ProjectState, frameIndex: Int): Bitmap {
-        val bitmap = Bitmap.createBitmap(project.canvasWidth, project.canvasHeight, Bitmap.Config.ARGB_8888)
+    /** Full-resolution render used by still/video exporters. */
+    fun render(project: ProjectState, frameIndex: Int): Bitmap = renderSized(project, frameIndex, null)
+
+    /** Memory-bounded editor render; never creates a full-size bitmap and then shrinks it. */
+    fun renderPreview(project: ProjectState, frameIndex: Int, maxSide: Int = 1400): Bitmap =
+        renderSized(project, frameIndex, maxSide.coerceIn(128, 2048))
+
+    fun renderThumbnail(project: ProjectState, frameIndex: Int, maxSide: Int = 240): Bitmap =
+        renderSized(project, frameIndex, maxSide.coerceIn(64, 512))
+
+    private fun renderSized(project: ProjectState, frameIndex: Int, maxSide: Int?): Bitmap {
+        val sourceWidth = project.canvasWidth.coerceIn(16, 8192)
+        val sourceHeight = project.canvasHeight.coerceIn(16, 8192)
+        val scale = if (maxSide == null) 1f else minOf(1f, maxSide.toFloat() / max(sourceWidth, sourceHeight))
+        val outWidth = (sourceWidth * scale).roundToInt().coerceAtLeast(1)
+        val outHeight = (sourceHeight * scale).roundToInt().coerceAtLeast(1)
+        val pixelCount = outWidth.toLong() * outHeight.toLong()
+        require(pixelCount <= 67_108_864L) { "Canvas is too large to render safely" }
+
+        val bitmap = Bitmap.createBitmap(outWidth, outHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         canvas.drawColor(project.backgroundArgb)
+        if (project.frames.isEmpty()) return bitmap
         val frame = project.frames[frameIndex.coerceIn(project.frames.indices)]
-        val cx = project.canvasWidth / 2f
-        val cy = project.canvasHeight / 2f
+        val cx = sourceWidth / 2f
+        val cy = sourceHeight / 2f
 
         canvas.save()
-        canvas.translate(cx + frame.cameraX, cy + frame.cameraY)
-        canvas.rotate(frame.cameraRotation)
-        canvas.scale(frame.cameraZoom, frame.cameraZoom)
+        canvas.scale(scale, scale)
+        canvas.translate(cx + frame.cameraX.safe(0f), cy + frame.cameraY.safe(0f))
+        canvas.rotate(frame.cameraRotation.safe(0f))
+        val cameraZoom = frame.cameraZoom.safe(1f).coerceIn(.05f, 20f)
+        canvas.scale(cameraZoom, cameraZoom)
         canvas.translate(-cx, -cy)
 
         frame.layers.asReversed().forEach { layer ->
             if (!layer.visible) return@forEach
-            val layerBitmap = Bitmap.createBitmap(project.canvasWidth, project.canvasHeight, Bitmap.Config.ARGB_8888)
-            val layerCanvas = Canvas(layerBitmap)
-            drawRaster(layerCanvas, layer, project.canvasWidth, project.canvasHeight)
-            layer.strokes.forEach { drawStroke(layerCanvas, it) }
+            val sx = layer.scaleX.safe(1f).let { if (kotlin.math.abs(it) < .001f) .001f else it }.coerceIn(-20f, 20f)
+            val sy = layer.scaleY.safe(1f).let { if (kotlin.math.abs(it) < .001f) .001f else it }.coerceIn(-20f, 20f)
 
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                alpha = (layer.opacity.coerceIn(0f, 1f) * 255f).toInt()
-            }
             canvas.save()
-            canvas.translate(cx + layer.offsetX, cy + layer.offsetY)
-            canvas.rotate(layer.rotationDeg)
-            canvas.scale(layer.scaleX, layer.scaleY)
+            canvas.translate(cx + layer.offsetX.safe(0f), cy + layer.offsetY.safe(0f))
+            canvas.rotate(layer.rotationDeg.safe(0f))
+            canvas.scale(sx, sy)
             canvas.translate(-cx, -cy)
-            canvas.drawBitmap(layerBitmap, 0f, 0f, paint)
+
+            // saveLayer groups the raster + all strokes so opacity applies once and CLEAR
+            // eraser strokes only erase this layer, without allocating a canvas-sized Bitmap.
+            val groupPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                alpha = (layer.opacity.safe(1f).coerceIn(0f, 1f) * 255f).roundToInt()
+            }
+            val group = canvas.saveLayer(RectF(0f, 0f, sourceWidth.toFloat(), sourceHeight.toFloat()), groupPaint)
+            drawRaster(canvas, layer, sourceWidth, sourceHeight)
+            layer.strokes.forEach { drawStroke(canvas, it) }
+            canvas.restoreToCount(group)
             canvas.restore()
-            layerBitmap.recycle()
         }
         canvas.restore()
         return bitmap
@@ -49,39 +76,50 @@ object FrameRenderer {
 
     private fun drawRaster(canvas: Canvas, layer: LayerState, canvasWidth: Int, canvasHeight: Int) {
         val encoded = layer.rasterPngBase64 ?: return
+        if (encoded.length > 96 * 1024 * 1024) return
         val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: return
-        val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
-        val maxWidth = canvasWidth.toFloat()
-        val maxHeight = canvasHeight.toFloat()
-        val scale = minOf(maxWidth / source.width, maxHeight / source.height, 1f)
-        val drawWidth = source.width * scale
-        val drawHeight = source.height * scale
-        val left = (canvasWidth - drawWidth) / 2f
-        val top = (canvasHeight - drawHeight) / 2f
-        val destination = android.graphics.RectF(left, top, left + drawWidth, top + drawHeight)
-        canvas.drawBitmap(source, null, destination, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
-        source.recycle()
+        if (bytes.size > 64 * 1024 * 1024) return
+        val source = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull() ?: return
+        try {
+            if (source.width <= 0 || source.height <= 0) return
+            val maxWidth = canvasWidth.toFloat()
+            val maxHeight = canvasHeight.toFloat()
+            val rasterScale = minOf(maxWidth / source.width, maxHeight / source.height, 1f)
+            if (!rasterScale.isFinite() || rasterScale <= 0f) return
+            val drawWidth = source.width * rasterScale
+            val drawHeight = source.height * rasterScale
+            val left = (canvasWidth - drawWidth) / 2f
+            val top = (canvasHeight - drawHeight) / 2f
+            val destination = RectF(left, top, left + drawWidth, top + drawHeight)
+            canvas.drawBitmap(source, null, destination, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+        } finally {
+            if (!source.isRecycled) source.recycle()
+        }
     }
 
     private fun drawStroke(canvas: Canvas, stroke: StrokeData) {
-        if (stroke.points.isEmpty()) return
+        val points = stroke.points.filter { it.x.isFinite() && it.y.isFinite() }
+        if (points.isEmpty()) return
+        val safeWidth = stroke.width.safe(1f).coerceIn(.1f, 4096f)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
-            strokeWidth = stroke.width
+            strokeWidth = safeWidth
             color = stroke.colorArgb
-            alpha = (stroke.alpha.coerceIn(0f, 1f) * 255f).toInt()
+            alpha = (stroke.alpha.safe(1f).coerceIn(0f, 1f) * 255f).roundToInt()
             if (stroke.erase) xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
         }
-        if (stroke.points.size == 1) {
-            canvas.drawCircle(stroke.points[0].x, stroke.points[0].y, stroke.width / 2f, paint.apply { style = Paint.Style.FILL })
+        if (points.size == 1) {
+            canvas.drawCircle(points[0].x, points[0].y, safeWidth / 2f, paint.apply { style = Paint.Style.FILL })
             return
         }
         val path = Path().apply {
-            moveTo(stroke.points.first().x, stroke.points.first().y)
-            stroke.points.drop(1).forEach { lineTo(it.x, it.y) }
+            moveTo(points.first().x, points.first().y)
+            points.drop(1).forEach { lineTo(it.x, it.y) }
         }
         canvas.drawPath(path, paint)
     }
+
+    private fun Float.safe(fallback: Float): Float = if (isFinite()) this else fallback
 }
