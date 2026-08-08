@@ -18,7 +18,7 @@ import java.util.Date
 @Composable
 fun HomeScreen(
     projects: List<ProjectMeta>,
-    onNewProject: (String, Int, Int) -> Unit,
+    onNewProject: (String, Int, Int, ProjectMode) -> Unit,
     onOpenProject: (String) -> Unit,
     onDuplicateProject: (String) -> Unit,
     onDeleteProject: (String) -> Unit,
@@ -33,7 +33,7 @@ fun HomeScreen(
                 title = {
                     Column {
                         Text("Frameflow", fontWeight = FontWeight.Bold)
-                        Text("Draw. Frame. Animate.", style = MaterialTheme.typography.bodyMedium)
+                        Text("Draw once. Clone. Move. Hold. Animate.", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             )
@@ -52,25 +52,25 @@ fun HomeScreen(
                     Modifier.fillMaxWidth().padding(vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    FilledTonalButton(onClick = { showNew = true }, modifier = Modifier.weight(1f)) {
-                        Text("New project")
-                    }
-                    OutlinedButton(onClick = onImportProject, modifier = Modifier.weight(1f)) {
-                        Text("Import .frameflow")
-                    }
+                    FilledTonalButton(onClick = { showNew = true }, modifier = Modifier.weight(1f)) { Text("New project") }
+                    OutlinedButton(onClick = onImportProject, modifier = Modifier.weight(1f)) { Text("Import .frameflow") }
+                }
+            }
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ModeInfoCard("Static", "Frame-by-frame drawing", Modifier.weight(1f))
+                    ModeInfoCard("Auto", "Smart motion helpers", Modifier.weight(1f))
+                    ModeInfoCard("Object", "Parts + reusable limbs", Modifier.weight(1f))
                 }
             }
 
             if (projects.isEmpty()) {
                 item {
-                    Card(
-                        Modifier.fillMaxWidth().padding(top = 28.dp),
-                        shape = RoundedCornerShape(24.dp)
-                    ) {
+                    Card(Modifier.fillMaxWidth().padding(top = 20.dp), shape = RoundedCornerShape(24.dp)) {
                         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("No animations yet", style = MaterialTheme.typography.headlineSmall)
                             Text(
-                                "Create a canvas, draw your first frame, then duplicate or add frames to build motion.",
+                                "Start with a blank canvas or import a character. The + button clones the current frame so you only redraw what changes.",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             FilledTonalButton(onClick = { showNew = true }) { Text("Create first animation") }
@@ -78,20 +78,9 @@ fun HomeScreen(
                     }
                 }
             } else {
-                item {
-                    Text(
-                        "Projects",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
-                    )
-                }
+                item { Text("Projects", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)) }
                 items(projects, key = { it.id }) { project ->
-                    ProjectCard(
-                        project = project,
-                        onOpen = { onOpenProject(project.id) },
-                        onDuplicate = { onDuplicateProject(project.id) },
-                        onDelete = { deleteTarget = project }
-                    )
+                    ProjectCard(project, { onOpenProject(project.id) }, { onDuplicateProject(project.id) }, { deleteTarget = project })
                 }
             }
         }
@@ -100,9 +89,9 @@ fun HomeScreen(
     if (showNew) {
         NewProjectDialog(
             onDismiss = { showNew = false },
-            onCreate = { name, width, height ->
+            onCreate = { name, width, height, mode ->
                 showNew = false
-                onNewProject(name, width, height)
+                onNewProject(name, width, height, mode)
             }
         )
     }
@@ -111,15 +100,22 @@ fun HomeScreen(
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("Delete ${target.name}?") },
-            text = { Text("This removes the local Frameflow project from this device.") },
+            text = { Text("This removes the local Frameflow project and its imported media from this device.") },
             confirmButton = {
-                TextButton(onClick = {
-                    deleteTarget = null
-                    onDeleteProject(target.id)
-                }) { Text("Delete") }
+                TextButton(onClick = { deleteTarget = null; onDeleteProject(target.id) }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } }
         )
+    }
+}
+
+@Composable
+private fun ModeInfoCard(title: String, subtitle: String, modifier: Modifier = Modifier) {
+    Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+        Column(Modifier.padding(10.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+            Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -130,10 +126,7 @@ private fun ProjectCard(
     onDuplicate: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
-        shape = RoundedCornerShape(20.dp)
-    ) {
+    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen), shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
@@ -160,52 +153,40 @@ private fun ProjectCard(
 }
 
 @Composable
-private fun NewProjectDialog(onDismiss: () -> Unit, onCreate: (String, Int, Int) -> Unit) {
+private fun NewProjectDialog(onDismiss: () -> Unit, onCreate: (String, Int, Int, ProjectMode) -> Unit) {
     var name by remember { mutableStateOf("Untitled animation") }
     var width by remember { mutableIntStateOf(1080) }
     var height by remember { mutableIntStateOf(1080) }
+    var mode by remember { mutableStateOf(ProjectMode.Static) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New animation") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it.take(64) },
-                    label = { Text("Project name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                OutlinedTextField(name, { name = it.take(64) }, label = { Text("Project name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text("Workflow", style = MaterialTheme.typography.labelLarge)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ProjectMode.entries.forEach { item ->
+                        FilterChip(
+                            selected = mode == item,
+                            onClick = { mode = item },
+                            label = { Text(item.label) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
                 Text("Canvas", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = width == 1080 && height == 1080,
-                        onClick = { width = 1080; height = 1080 },
-                        label = { Text("Square") }
-                    )
-                    FilterChip(
-                        selected = width == 1080 && height == 1920,
-                        onClick = { width = 1080; height = 1920 },
-                        label = { Text("Portrait") }
-                    )
-                    FilterChip(
-                        selected = width == 1920 && height == 1080,
-                        onClick = { width = 1920; height = 1080 },
-                        label = { Text("Landscape") }
-                    )
+                    FilterChip(width == 1080 && height == 1080, { width = 1080; height = 1080 }, { Text("Square") })
+                    FilterChip(width == 1080 && height == 1920, { width = 1080; height = 1920 }, { Text("Portrait") })
+                    FilterChip(width == 1920 && height == 1080, { width = 1920; height = 1080 }, { Text("Landscape") })
                 }
-                Text(
-                    "$width × $height",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("$width × $height", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
         confirmButton = {
-            Button(onClick = { onCreate(name.trim().ifBlank { "Untitled animation" }, width, height) }) {
-                Text("Create")
-            }
+            Button(onClick = { onCreate(name.trim().ifBlank { "Untitled animation" }, width, height, mode) }) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
