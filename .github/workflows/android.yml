@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [ main, bulk-import-export ]
+    branches: [ main ]
   pull_request:
   workflow_dispatch:
 
