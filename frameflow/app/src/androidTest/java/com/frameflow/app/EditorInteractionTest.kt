@@ -1,9 +1,12 @@
 package com.frameflow.app
 
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.performTextInput
 import org.junit.Rule
 import org.junit.Test
 
@@ -45,7 +48,15 @@ class EditorInteractionTest {
 
     private fun selectPreset(tool: String, preset: String) {
         rule.onNodeWithText(tool).assertExists().performClick()
-        rule.onNodeWithText(preset).performScrollTo().assertExists().performClick()
+        rule.waitForIdle()
+        val search = rule.onNodeWithText("Search")
+        search.performTextClearance()
+        search.performTextInput(preset)
+        rule.waitForIdle()
+        val matches = rule.onAllNodesWithText(preset)
+        val count = matches.fetchSemanticsNodes().size
+        check(count > 0) { "No preset result found for $preset" }
+        matches[count - 1].performClick()
         rule.waitForIdle()
         rule.onNodeWithText("Play").assertExists()
     }
