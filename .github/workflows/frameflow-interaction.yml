@@ -8,6 +8,7 @@ on:
       - 'settings.gradle.kts'
       - '.github/workflows/frameflow-interaction.yml'
       - '.github/scripts/frameflow-interaction.sh'
+      - '.github/scripts/frameflow-rc-source-patch.py'
   pull_request:
     paths:
       - 'frameflow/**'
@@ -20,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   interaction:
@@ -39,6 +40,22 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+
+      - name: Apply staged RC source fixes
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f .github/scripts/frameflow-rc-source-patch.py ]; then
+            python3 .github/scripts/frameflow-rc-source-patch.py
+            gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin --stacktrace
+            rm .github/scripts/frameflow-rc-source-patch.py
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add frameflow/app/src/main/java/com/frameflow/app/MediaExporter.kt frameflow/app/src/main/java/com/frameflow/app/ProjectRepository.kt .github/scripts/frameflow-rc-source-patch.py
+            git commit -m 'Fix GIF sizing and multi-audio duplication'
+            git push origin HEAD:frameflow-build
+          fi
 
       - name: Enable KVM
         run: |
