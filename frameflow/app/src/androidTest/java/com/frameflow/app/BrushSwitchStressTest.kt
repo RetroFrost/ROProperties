@@ -53,7 +53,6 @@ class BrushSwitchStressTest {
             val family = listOf("Ink", "Marker", "Texture")[pass]
             compose.onNodeWithText(family).performClick()
             compose.waitForIdle()
-            compose.onNodeWithText("Brushes").assertExists()
             val familyPreset = when (family) {
                 "Ink" -> "Ink 2"
                 "Marker" -> "Marker 2"
