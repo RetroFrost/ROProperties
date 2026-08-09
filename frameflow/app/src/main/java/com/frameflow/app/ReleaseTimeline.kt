@@ -69,7 +69,7 @@ fun ReleaseTimeline(editor: EditorState, history: ProjectHistory, onExactDuratio
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            itemsIndexed(project.frames, key = { _, frame -> frame }) { index, frame ->
+            itemsIndexed(project.frames, key = { index, _ -> index }) { index, frame ->
                 val selected = index == editor.frameIndex
                 val thumb = remember(project.revision, frame) { FrameRenderer.renderThumbnail(project, index, 220) }
                 DisposableEffect(thumb) { onDispose { if (!thumb.isRecycled) thumb.recycle() } }
