@@ -19,7 +19,8 @@ import kotlinx.coroutines.withContext
 enum class ReleaseTool(val label: String) {
     Brush("Brush"), Eraser("Eraser"), SelectPart("Select limb"), ColourRepeat("Colour repeat"),
     Fill("Fill"), Eyedropper("Eyedropper"), Lasso("Lasso"), Line("Line"),
-    Rectangle("Rectangle"), Ellipse("Ellipse"), Pan("Pan")
+    Rectangle("Rectangle"), Ellipse("Ellipse"), Pan("Pan"),
+    MaskAdd("Add to limb"), MaskRemove("Remove from limb")
 }
 
 enum class ReleaseSheet { Brushes, Erasers, Colour, Layers, Onion, Smart, LazyChat, Audio, Project, Camera, Tools }
