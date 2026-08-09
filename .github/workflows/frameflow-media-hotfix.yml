@@ -40,17 +40,16 @@ jobs:
           path = Path('frameflow/app/src/main/java/com/frameflow/app/MediaExporter.kt')
           text = path.read_text()
 
-          old_decoder = '''                            decoder.queueInputBuffer(inputIndex, 0, size, sampleTime.coerceAtLeast(0L), extractor.sampleFlags)'''
-          new_decoder = '''                            val sampleFlags = extractor.sampleFlags
+          decoder_line = 'decoder.queueInputBuffer(inputIndex, 0, size, sampleTime.coerceAtLeast(0L), extractor.sampleFlags)'
+          decoder_replacement = '''val sampleFlags = extractor.sampleFlags
                             require(sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Encrypted audio is not supported" }
                             val codecFlags = if (sampleFlags and MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME != 0) {
                                 MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
                             } else 0
                             decoder.queueInputBuffer(inputIndex, 0, size, sampleTime.coerceAtLeast(0L), codecFlags)'''
 
-          old_mux = '''                info.set(0, size, outputPts, extractor.sampleFlags)
-                muxer.writeSampleData(outputTrack, buffer, info)'''
-          new_mux = '''                val sampleFlags = extractor.sampleFlags
+          mux_line = 'info.set(0, size, outputPts, extractor.sampleFlags)'
+          mux_replacement = '''val sampleFlags = extractor.sampleFlags
                 require(sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Encrypted media samples are not supported" }
                 var codecFlags = 0
                 if (sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
@@ -59,15 +58,15 @@ jobs:
                 if (sampleFlags and MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME != 0) {
                     codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
                 }
-                info.set(0, size, outputPts, codecFlags)
-                muxer.writeSampleData(outputTrack, buffer, info)'''
+                info.set(0, size, outputPts, codecFlags)'''
 
-          if text.count(old_decoder) != 1:
+          if text.count(decoder_line) != 1:
               raise SystemExit('decoder sampleFlags handoff not found exactly once')
-          if text.count(old_mux) != 1:
+          if text.count(mux_line) != 1:
               raise SystemExit('mux sampleFlags handoff not found exactly once')
 
-          text = text.replace(old_decoder, new_decoder).replace(old_mux, new_mux)
+          text = text.replace(decoder_line, decoder_replacement)
+          text = text.replace(mux_line, mux_replacement)
           path.write_text(text)
           PY
 
