@@ -106,7 +106,7 @@ fun Slider(
 /**
  * Stable-frame overload used by Frameflow's timeline.
  *
- * FullEditorScreen used the project's visual revision in the caller-provided key.
+ * The previous editor used the project's visual revision in the caller-provided key.
  * That meant every duration update recreated the timeline item while the finger
  * was still down, which cancelled the gesture and made the handle appear to
  * "stop" until the user dragged again. Frame objects themselves are stable, so
