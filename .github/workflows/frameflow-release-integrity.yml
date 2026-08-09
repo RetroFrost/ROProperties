@@ -30,12 +30,15 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
-      - name: Reject placeholder shipping code
+      - name: Reject unfinished shipping code
         run: |
           set -euo pipefail
           SRC=frameflow/app/src/main/java/com/frameflow/app
-          if grep -RniE '\b(TODO|FIXME|placeholder|coming soon|not implemented|prototype only)\b' "$SRC"; then
-            echo 'Frameflow shipping source still contains placeholder markers.' >&2
+          # `placeholder = { ... }` is a legitimate Compose text-field API, so do not
+          # treat that identifier as unfinished functionality. Reject actual stub
+          # markers and user-visible deferrals instead.
+          if grep -RniE '\b(TODO|FIXME|coming soon|not implemented|prototype only|stub only|fake implementation)\b' "$SRC"; then
+            echo 'Frameflow shipping source still contains unfinished-feature markers.' >&2
             exit 1
           fi
           if grep -RniE '\b(FullEditorScreen|EditorScreen)\b' "$SRC"; then
