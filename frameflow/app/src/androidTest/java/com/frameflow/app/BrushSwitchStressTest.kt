@@ -29,7 +29,7 @@ class BrushSwitchStressTest {
                 search.performTextClearance()
                 search.performTextInput(name)
                 compose.waitForIdle()
-                compose.onNodeWithText(name).performClick()
+                clickLastText(name)
                 compose.waitForIdle()
                 compose.onNodeWithText("Export").assertExists()
             }
@@ -41,28 +41,35 @@ class BrushSwitchStressTest {
                 search.performTextClearance()
                 search.performTextInput(name)
                 compose.waitForIdle()
-                compose.onNodeWithText(name).performClick()
+                clickLastText(name)
                 compose.waitForIdle()
                 compose.onNodeWithText("Export").assertExists()
             }
 
-            // Re-enter the brush sheet with different category state each pass.
+            // Re-enter with an empty query so the family filter itself is what controls the list.
             compose.onNodeWithText("Brush").performClick()
             compose.waitForIdle()
+            compose.onNodeWithText("Search").performTextClearance()
             val family = listOf("Ink", "Marker", "Texture")[pass]
             compose.onNodeWithText(family).performClick()
             compose.waitForIdle()
             compose.onNodeWithText("Brushes").assertExists()
-            // Choose a visible family preset, closing the sheet through a real selection.
             val familyPreset = when (family) {
                 "Ink" -> "Ink 2"
                 "Marker" -> "Marker 2"
                 else -> "Texture 2"
             }
-            compose.onNodeWithText(familyPreset).performClick()
+            clickLastText(familyPreset)
             compose.waitForIdle()
             compose.onNodeWithText("Export").assertExists()
         }
+    }
+
+    private fun clickLastText(text: String) {
+        val matches = compose.onAllNodesWithText(text)
+        val count = matches.fetchSemanticsNodes().size
+        check(count > 0) { "No semantics node found for $text" }
+        matches[count - 1].performClick()
     }
 
     private fun openProject() {
