@@ -1,0 +1,87 @@
+name: Frameflow media hotfix
+
+on:
+  push:
+    branches: [frameflow-build]
+    paths:
+      - '.github/workflows/frameflow-media-hotfix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: frameflow-build
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Patch extractor flag mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('frameflow/app/src/main/java/com/frameflow/app/MediaExporter.kt')
+          text = path.read_text()
+
+          old_decoder = '''                            decoder.queueInputBuffer(inputIndex, 0, size, sampleTime.coerceAtLeast(0L), extractor.sampleFlags)'''
+          new_decoder = '''                            val sampleFlags = extractor.sampleFlags
+                            require(sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Encrypted audio is not supported" }
+                            val codecFlags = if (sampleFlags and MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME != 0) {
+                                MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
+                            } else 0
+                            decoder.queueInputBuffer(inputIndex, 0, size, sampleTime.coerceAtLeast(0L), codecFlags)'''
+
+          old_mux = '''                info.set(0, size, outputPts, extractor.sampleFlags)
+                muxer.writeSampleData(outputTrack, buffer, info)'''
+          new_mux = '''                val sampleFlags = extractor.sampleFlags
+                require(sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Encrypted media samples are not supported" }
+                var codecFlags = 0
+                if (sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+                    codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_KEY_FRAME
+                }
+                if (sampleFlags and MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME != 0) {
+                    codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
+                }
+                info.set(0, size, outputPts, codecFlags)
+                muxer.writeSampleData(outputTrack, buffer, info)'''
+
+          if text.count(old_decoder) != 1:
+              raise SystemExit('decoder sampleFlags handoff not found exactly once')
+          if text.count(old_mux) != 1:
+              raise SystemExit('mux sampleFlags handoff not found exactly once')
+
+          text = text.replace(old_decoder, new_decoder).replace(old_mux, new_mux)
+          path.write_text(text)
+          PY
+
+      - name: Verify hotfix
+        run: |
+          gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug --stacktrace
+
+      - name: Commit hotfix and remove helper workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/frameflow-media-hotfix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add frameflow/app/src/main/java/com/frameflow/app/MediaExporter.kt .github/workflows/frameflow-media-hotfix.yml
+          git commit -m 'Fix MP4 extractor sample flag mapping'
+          git push origin HEAD:frameflow-build
