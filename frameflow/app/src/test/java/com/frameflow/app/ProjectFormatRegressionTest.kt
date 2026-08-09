@@ -69,7 +69,9 @@ class ProjectFormatRegressionTest {
         root.put("canvasWidth", 999999)
         root.put("canvasHeight", -1)
         root.getJSONArray("frames").getJSONObject(0).put("durationMs", -100)
-        root.getJSONArray("frames").getJSONObject(0).put("cameraZoom", Double.NaN)
+        // JSONObject rejects a Double.NaN at put-time. Use the valid JSON string form so
+        // projectFromJson still has to parse and sanitise a non-finite numeric value.
+        root.getJSONArray("frames").getJSONObject(0).put("cameraZoom", "NaN")
 
         val restored = projectFromJson(root.toString())
         assertEquals(60, restored.fps)
