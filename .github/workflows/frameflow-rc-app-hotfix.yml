@@ -1,0 +1,93 @@
+name: Frameflow RC app hotfix
+
+on:
+  push:
+    branches: [frameflow-build]
+    paths:
+      - '.github/workflows/frameflow-rc-app-hotfix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: frameflow-build
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Patch RC app regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # 1) LazyRow keys must be Bundle-saveable on Android.
+          timeline = Path('frameflow/app/src/main/java/com/frameflow/app/ReleaseTimeline.kt')
+          text = timeline.read_text()
+          old = 'itemsIndexed(project.frames, key = { _, frame -> frame }) { index, frame ->'
+          new = 'itemsIndexed(project.frames, key = { index, _ -> index }) { index, frame ->'
+          if text.count(old) != 1:
+              raise SystemExit('timeline FrameState key not found exactly once')
+          timeline.write_text(text.replace(old, new))
+
+          # 2) gifencoder expects [height][width], not a transposed [width][height] matrix.
+          media = Path('frameflow/app/src/main/java/com/frameflow/app/MediaExporter.kt')
+          text = media.read_text()
+          old = 'return Array(bitmap.width) { x -> IntArray(bitmap.height) { y -> raw[y * bitmap.width + x] } }'
+          new = '''return Array(bitmap.height) { y ->
+            IntArray(bitmap.width) { x -> raw[y * bitmap.width + x] }
+        }'''
+          if text.count(old) != 1:
+              raise SystemExit('GIF pixel matrix conversion not found exactly once')
+          media.write_text(text.replace(old, new))
+
+          # 3) Duplicating a project must preserve the complete multi-audio sidecar, not only legacy clip #1.
+          repo = Path('frameflow/app/src/main/java/com/frameflow/app/ProjectRepository.kt')
+          text = repo.read_text()
+          old = '''        audioFile(project)?.let { audio ->
+            val dest = File(mediaDir(clone.id).apply { mkdirs() }, safeFileName(audio.name))
+            audio.inputStream().use { input -> FileOutputStream(dest).use { input.copyTo(it) } }
+            clone.audioFileName = dest.name
+        }'''
+          new = '''        val sourceMediaDir = mediaDir(project.id)
+        val cloneMediaDir = mediaDir(clone.id)
+        if (sourceMediaDir.isDirectory) {
+            check(sourceMediaDir.copyRecursively(cloneMediaDir, overwrite = true)) { "Unable to duplicate project media" }
+        }
+        clone.audioFileName = project.audioFileName
+            ?.let(::safeFileName)
+            ?.takeIf { File(cloneMediaDir, it).isFile }'''
+          if text.count(old) != 1:
+              raise SystemExit('legacy duplicate-audio block not found exactly once')
+          repo.write_text(text.replace(old, new))
+          PY
+
+      - name: Verify app hotfix
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin --stacktrace
+
+      - name: Commit verified app hotfix and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/frameflow-rc-app-hotfix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add frameflow/app/src/main/java/com/frameflow/app/ReleaseTimeline.kt frameflow/app/src/main/java/com/frameflow/app/MediaExporter.kt frameflow/app/src/main/java/com/frameflow/app/ProjectRepository.kt .github/workflows/frameflow-rc-app-hotfix.yml
+          git commit -m 'Fix RC timeline GIF and multi-audio regressions'
+          git push origin HEAD:frameflow-build
