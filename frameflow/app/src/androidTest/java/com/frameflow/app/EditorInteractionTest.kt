@@ -4,7 +4,6 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import org.junit.Rule
@@ -31,7 +30,7 @@ class EditorInteractionTest {
         rule.onNodeWithText("Select limb").assertExists().performClick()
         rule.onNodeWithText("Colour repeat").assertExists().performClick()
         rule.onNodeWithText("Tools").assertExists().performClick()
-        rule.onNodeWithText("Line").performScrollTo().assertExists().performClick()
+        rule.onNodeWithText("Line").assertExists().performClick()
         rule.waitForIdle()
 
         rule.onNodeWithText("+ Clone").assertExists().performClick()
