@@ -14,5 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ROProperties"
+rootProject.name = "Frameflow-CI"
 include(":app")
+project(":app").projectDir = file("frameflow/app")

@@ -1,0 +1,64 @@
+name: Frameflow release integrity
+
+on:
+  push:
+    branches: [frameflow-build]
+    paths:
+      - 'frameflow/**'
+      - 'settings.gradle.kts'
+      - '.github/workflows/frameflow-release-integrity.yml'
+  pull_request:
+    paths:
+      - 'frameflow/**'
+      - 'settings.gradle.kts'
+      - '.github/workflows/frameflow-release-integrity.yml'
+
+concurrency:
+  group: frameflow-integrity-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Reject unfinished shipping code
+        run: |
+          set -euo pipefail
+          SRC=frameflow/app/src/main/java/com/frameflow/app
+          if grep -RniE '\b(TODO|FIXME|coming soon|not implemented|prototype only|stub only|fake implementation)\b' "$SRC"; then
+            echo 'Frameflow shipping source contains unfinished-feature markers.' >&2
+            exit 1
+          fi
+          if grep -RniE '\b(FullEditorScreen|EditorScreen)\b' "$SRC"; then
+            echo 'Frameflow references an obsolete editor implementation.' >&2
+            exit 1
+          fi
+
+      - name: Android Lint
+        run: gradle --no-daemon :app:lintDebug --stacktrace
+
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frameflow-lint-reports
+          path: |
+            frameflow/app/build/reports/lint-results-*.html
+            frameflow/app/build/reports/lint-results-*.txt
+            frameflow/app/build/reports/lint-results-*.xml
+          if-no-files-found: ignore
+          retention-days: 14
