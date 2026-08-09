@@ -1,0 +1,60 @@
+name: Frameflow interaction regression
+
+on:
+  push:
+    branches: [frameflow-build]
+    paths:
+      - 'frameflow/**'
+      - '.github/workflows/frameflow-interaction.yml'
+  pull_request:
+    paths:
+      - 'frameflow/**'
+      - '.github/workflows/frameflow-interaction.yml'
+
+concurrency:
+  group: frameflow-interaction-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  connected-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run all Frameflow instrumentation regressions
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -euo pipefail
+            cd frameflow
+            gradle --no-daemon connectedDebugAndroidTest
+      - name: Upload Android test reports on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frameflow-connected-test-reports
+          path: |
+            frameflow/app/build/reports/androidTests/**
+            frameflow/app/build/outputs/androidTest-results/**
+          if-no-files-found: ignore
+          retention-days: 14
