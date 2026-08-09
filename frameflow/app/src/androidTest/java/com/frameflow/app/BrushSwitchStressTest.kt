@@ -67,18 +67,11 @@ class BrushSwitchStressTest {
 
     private fun openProject() {
         compose.waitForIdle()
-        // Reuse an existing project if CI state has one; otherwise create Static animation.
-        val staticNodes = compose.onAllNodesWithText("Static animation")
-        if (staticNodes.fetchSemanticsNodes().isNotEmpty()) {
-            staticNodes[0].performClick()
-            compose.waitForIdle()
-        }
-        if (compose.onAllNodesWithText("Export").fetchSemanticsNodes().isEmpty()) {
-            compose.onAllNodesWithText("New project")[0].performClick()
-            compose.waitForIdle()
-            compose.onAllNodesWithText("Static animation")[0].performClick()
-            compose.waitForIdle()
-        }
+        if (compose.onAllNodesWithText("Export").fetchSemanticsNodes().isNotEmpty()) return
+        compose.onNodeWithText("+ New animation").assertExists().performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Create").assertExists().performClick()
+        compose.waitForIdle()
         compose.onNodeWithText("Export").assertExists()
     }
 }
