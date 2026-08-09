@@ -22,7 +22,7 @@ enum class ReleaseTool(val label: String) {
     Rectangle("Rectangle"), Ellipse("Ellipse"), Pan("Pan")
 }
 
-enum class ReleaseSheet { Brushes, Erasers, Colour, Layers, Onion, Smart, Audio, Project, Camera, Tools }
+enum class ReleaseSheet { Brushes, Erasers, Colour, Layers, Onion, Smart, LazyChat, Audio, Project, Camera, Tools }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -176,6 +176,7 @@ fun ReleaseEditorScreen(
                 item { AssistChip({ sheet = ReleaseSheet.Layers }, label = { Text("Layers") }) }
                 item { AssistChip({ sheet = ReleaseSheet.Onion }, label = { Text("Onion") }) }
                 item { AssistChip({ sheet = ReleaseSheet.Smart }, label = { Text("Smart") }) }
+                item { FilledTonalButton(onClick = { sheet = ReleaseSheet.LazyChat }) { Text("Lazy Chat") } }
                 item { AssistChip({ sheet = ReleaseSheet.Audio }, label = { Text("Audio") }) }
             }
 
