@@ -72,7 +72,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: |
-            set -euo pipefail
+            set -eu
             mkdir -p ci-artifacts
             collect_debug() {
               adb logcat -d -v threadtime > ci-artifacts/logcat-api-${{ matrix.api }}.txt 2>&1 || true
