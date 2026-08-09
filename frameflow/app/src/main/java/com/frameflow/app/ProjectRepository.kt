@@ -118,11 +118,14 @@ class ProjectRepository(private val context: Context) {
             audioOffsetMs = project.audioOffsetMs,
             audioVolume = project.audioVolume
         )
-        audioFile(project)?.let { audio ->
-            val dest = File(mediaDir(clone.id).apply { mkdirs() }, safeFileName(audio.name))
-            audio.inputStream().use { input -> FileOutputStream(dest).use { input.copyTo(it) } }
-            clone.audioFileName = dest.name
+        val sourceMediaDir = mediaDir(project.id)
+        val cloneMediaDir = mediaDir(clone.id)
+        if (sourceMediaDir.isDirectory) {
+            check(sourceMediaDir.copyRecursively(cloneMediaDir, overwrite = true)) { "Unable to duplicate project media" }
         }
+        clone.audioFileName = project.audioFileName
+            ?.let(::safeFileName)
+            ?.takeIf { File(cloneMediaDir, it).isFile }
         save(clone)
         return clone
     }

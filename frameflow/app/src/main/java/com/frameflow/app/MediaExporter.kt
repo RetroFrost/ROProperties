@@ -614,7 +614,9 @@ object MediaExporter {
     private fun bitmapToGifPixels(bitmap: Bitmap): Array<IntArray> {
         val raw = IntArray(bitmap.width * bitmap.height)
         bitmap.getPixels(raw, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        return Array(bitmap.width) { x -> IntArray(bitmap.height) { y -> raw[y * bitmap.width + x] } }
+        return Array(bitmap.height) { y ->
+        IntArray(bitmap.width) { x -> raw[y * bitmap.width + x] }
+    }
     }
 
     private fun even(value: Int): Int = (value and 0xFFFFFFFE.toInt()).coerceAtLeast(64)
