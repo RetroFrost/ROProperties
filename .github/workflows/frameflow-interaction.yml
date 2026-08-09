@@ -1,14 +1,16 @@
-name: Frameflow interaction regression
+name: Frameflow interaction
 
 on:
   push:
     branches: [frameflow-build]
     paths:
       - 'frameflow/**'
+      - 'settings.gradle.kts'
       - '.github/workflows/frameflow-interaction.yml'
   pull_request:
     paths:
       - 'frameflow/**'
+      - 'settings.gradle.kts'
       - '.github/workflows/frameflow-interaction.yml'
 
 concurrency:
@@ -19,41 +21,65 @@ permissions:
   contents: read
 
 jobs:
-  connected-tests:
+  interaction:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: android-actions/setup-android@v3
+
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Run all Frameflow instrumentation regressions
+
+      - name: Run editor interaction regressions
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
           target: google_apis
           arch: x86_64
-          profile: pixel_2
+          profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: |
             set -euo pipefail
-            cd frameflow
-            gradle --no-daemon connectedDebugAndroidTest
-      - name: Upload Android test reports on failure
+            mkdir -p ci-artifacts
+            collect_debug() {
+              adb logcat -d -v threadtime > ci-artifacts/logcat.txt 2>&1 || true
+              adb shell dumpsys activity activities > ci-artifacts/activities.txt 2>&1 || true
+              adb shell dumpsys meminfo com.frameflow.app > ci-artifacts/meminfo.txt 2>&1 || true
+              adb shell screencap -p /sdcard/frameflow-ci.png >/dev/null 2>&1 || true
+              adb pull /sdcard/frameflow-ci.png ci-artifacts/screen.png >/dev/null 2>&1 || true
+            }
+            trap collect_debug EXIT
+            adb logcat -c
+            gradle --no-daemon :app:connectedDebugAndroidTest --stacktrace
+            adb shell am force-stop com.frameflow.app
+            adb shell am start -W -n com.frameflow.app/.MainActivity
+            sleep 3
+            test -n "$(adb shell pidof com.frameflow.app)"
+            adb shell dumpsys activity activities | grep -q 'com.frameflow.app/.MainActivity'
+            ! adb logcat -d -v brief | grep -E 'FATAL EXCEPTION.*com.frameflow.app|Process: com.frameflow.app.*FATAL'
+
+      - name: Upload interaction diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: frameflow-connected-test-reports
+          name: frameflow-interaction-diagnostics
           path: |
+            ci-artifacts/**
             frameflow/app/build/reports/androidTests/**
             frameflow/app/build/outputs/androidTest-results/**
           if-no-files-found: ignore
