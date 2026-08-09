@@ -37,6 +37,7 @@ fun ReleaseSheets(
             onOnionBefore, onOnionAfter, onOnionAlpha, onOnionLayerOnly, onDismiss
         )
         ReleaseSheet.Smart -> ReleaseSmartSheet(editor, history, onMessage, onDismiss)
+        ReleaseSheet.LazyChat -> ReleaseLazyChatSheet(editor, history, onDismiss)
         ReleaseSheet.Audio -> ReleaseAudioSheet(editor, history, repository, onImportAudio, onMessage, onDismiss)
         ReleaseSheet.Project -> ReleaseProjectSheet(editor.project, history, onSave, onDismiss)
         ReleaseSheet.Camera -> ReleaseCameraSheet(editor, history, viewZoom, onViewZoom, onResetView, onDismiss)
