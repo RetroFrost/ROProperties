@@ -46,18 +46,18 @@ class BrushSwitchStressTest {
                 compose.onNodeWithText("Export").assertExists()
             }
 
-            // Re-enter with an empty query so the family filter itself is what controls the list.
+            // Exercise family filtering, then search within that family so the test is
+            // independent of the lazy list's previous scroll position.
             compose.onNodeWithText("Brush").performClick()
             compose.waitForIdle()
-            compose.onNodeWithText("Search").performTextClearance()
+            val search = compose.onNodeWithText("Search")
+            search.performTextClearance()
             val family = listOf("Ink", "Marker", "Texture")[pass]
             compose.onNodeWithText(family).performClick()
             compose.waitForIdle()
-            val familyPreset = when (family) {
-                "Ink" -> "Ink 2"
-                "Marker" -> "Marker 2"
-                else -> "Texture 2"
-            }
+            val familyPreset = "$family 2"
+            search.performTextInput(familyPreset)
+            compose.waitForIdle()
             clickLastText(familyPreset)
             compose.waitForIdle()
             compose.onNodeWithText("Export").assertExists()
