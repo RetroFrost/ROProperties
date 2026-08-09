@@ -69,8 +69,8 @@ class ProjectFormatRegressionTest {
         root.put("canvasWidth", 999999)
         root.put("canvasHeight", -1)
         root.getJSONArray("frames").getJSONObject(0).put("durationMs", -100)
-        // JSONObject rejects a Double.NaN at put-time. Use the valid JSON string form so
-        // projectFromJson still has to parse and sanitise a non-finite numeric value.
+        // JSONObject rejects Double.NaN during construction, so use its valid string form.
+        // This still reaches projectFromJson as a non-finite numeric value to sanitise.
         root.getJSONArray("frames").getJSONObject(0).put("cameraZoom", "NaN")
 
         val restored = projectFromJson(root.toString())
