@@ -14,7 +14,8 @@ trap collect_debug EXIT
 APK="$(find apk -name '*.apk' -type f | head -1)"
 test -n "$APK"
 adb install -r "$APK"
-adb logcat -c
+# Some older emulator images refuse to clear one log buffer even though log reading works.
+adb logcat -c >/dev/null 2>&1 || true
 
 adb shell am force-stop com.frameflow.app
 adb shell am start -W -n com.frameflow.app/.MainActivity
