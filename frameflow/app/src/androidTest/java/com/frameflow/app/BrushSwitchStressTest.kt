@@ -4,6 +4,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -46,14 +47,14 @@ class BrushSwitchStressTest {
                 compose.onNodeWithText("Export").assertExists()
             }
 
-            // Exercise family filtering, then search within that family so the test is
-            // independent of the lazy list's previous scroll position.
+            // Exercise family filtering. The family chips are a LazyRow, so scroll the
+            // requested chip into composition instead of depending on the row's old position.
             compose.onNodeWithText("Brush").performClick()
             compose.waitForIdle()
             val search = compose.onNodeWithText("Search")
             search.performTextClearance()
             val family = listOf("Ink", "Marker", "Texture")[pass]
-            compose.onNodeWithText(family).performClick()
+            compose.onNodeWithText(family).performScrollTo().performClick()
             compose.waitForIdle()
             val familyPreset = "$family 2"
             search.performTextInput(familyPreset)
