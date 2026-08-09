@@ -41,6 +41,10 @@ dependencies {
     implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
 
     testImplementation("junit:junit:4.13.2")
+    // Android ships org.json at runtime, but local JVM unit tests otherwise see
+    // only the non-functional android.jar stubs. Use the reference implementation
+    // so project snapshots/undo/format regression tests exercise real JSON logic.
+    testImplementation("org.json:json:20240303")
 
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
