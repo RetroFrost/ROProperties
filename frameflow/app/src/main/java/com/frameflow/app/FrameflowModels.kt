@@ -243,7 +243,9 @@ val erasers = List(60) {
 }
 
 class EditorState(val project: ProjectState) {
-    private var frameIndexState by mutableIntStateOf(project.activeFrameIndex.coerceIn(project.frames.indices))
+    private var frameIndexState by mutableIntStateOf(
+        if (project.frames.isEmpty()) 0 else project.activeFrameIndex.coerceIn(project.frames.indices)
+    )
     var frameIndex: Int
         get() = frameIndexState
         set(value) {
