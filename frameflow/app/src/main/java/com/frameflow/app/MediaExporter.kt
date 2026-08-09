@@ -298,7 +298,12 @@ object MediaExporter {
                             decoder.queueInputBuffer(inputIndex, 0, 0, max(sourceStartUs, sampleTime), MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
-                            decoder.queueInputBuffer(inputIndex, 0, size, sampleTime.coerceAtLeast(0L), extractor.sampleFlags)
+                            val sampleFlags = extractor.sampleFlags
+                  require(sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Encrypted audio is not supported" }
+                  val codecFlags = if (sampleFlags and MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME != 0) {
+                      MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
+                  } else 0
+                  decoder.queueInputBuffer(inputIndex, 0, size, sampleTime.coerceAtLeast(0L), codecFlags)
                             extractor.advance()
                         }
                     }
@@ -542,7 +547,16 @@ object MediaExporter {
             val outputPts = extractor.sampleTime + offsetUs
             if (outputPts >= endUs) break
             if (outputPts >= 0L) {
-                info.set(0, size, outputPts, extractor.sampleFlags)
+                val sampleFlags = extractor.sampleFlags
+      require(sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Encrypted media samples are not supported" }
+      var codecFlags = 0
+      if (sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+          codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_KEY_FRAME
+      }
+      if (sampleFlags and MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME != 0) {
+          codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
+      }
+      info.set(0, size, outputPts, codecFlags)
                 muxer.writeSampleData(outputTrack, buffer, info)
             }
             if (!extractor.advance()) break
