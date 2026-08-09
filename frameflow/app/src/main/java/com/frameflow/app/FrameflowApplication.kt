@@ -24,6 +24,9 @@ class FrameflowApplication : Application() {
                 dir.listFiles()?.sortedByDescending { it.lastModified() }?.drop(4)?.forEach { it.delete() }
                 val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
                 val stack = StringWriter().also { writer -> throwable.printStackTrace(PrintWriter(writer)) }.toString()
+                val versionName = runCatching {
+                    packageManager.getPackageInfo(packageName, 0).versionName
+                }.getOrNull() ?: "unknown"
                 File(dir, "crash-$stamp.txt").writeText(
                     buildString {
                         appendLine("Frameflow crash")
@@ -31,7 +34,7 @@ class FrameflowApplication : Application() {
                         appendLine("thread=${thread.name}")
                         appendLine("android=${android.os.Build.VERSION.SDK_INT}")
                         appendLine("device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-                        appendLine("version=${BuildConfig.VERSION_NAME}")
+                        appendLine("version=$versionName")
                         appendLine()
                         append(stack.take(512_000))
                     }
